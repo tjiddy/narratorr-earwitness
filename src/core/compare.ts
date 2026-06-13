@@ -94,17 +94,28 @@ export function nameSimilarity(a: string, b: string): number {
   return sum / short.length;
 }
 
-/** Best similarity between two people-sets (each detected person matched to its best tag). */
+/** Mean best-match score mapping each name in `from` to its closest in `to`. */
+function avgBestMatch(from: string[], to: string[]): number {
+  let sum = 0;
+  for (const a of from) {
+    let best = 0;
+    for (const b of to) best = Math.max(best, nameSimilarity(a, b));
+    sum += best;
+  }
+  return sum / from.length;
+}
+
+/**
+ * Symmetric, cardinality-aware similarity between two people-sets: the WORSE of
+ * the two directional averages. A one-directional average (only detected→tags)
+ * scores `detected=[A]` vs `tags=[A,B]` a perfect 1.0 and never flags a tag that
+ * credits someone not in the book; taking the min in both directions catches both
+ * an extra tagged person and a missing one.
+ */
 export function personSetSimilarity(detected: string[], tags: string[]): number {
   if (detected.length === 0 && tags.length === 0) return 1;
   if (detected.length === 0 || tags.length === 0) return 0;
-  let sum = 0;
-  for (const d of detected) {
-    let best = 0;
-    for (const t of tags) best = Math.max(best, nameSimilarity(d, t));
-    sum += best;
-  }
-  return sum / detected.length;
+  return Math.min(avgBestMatch(detected, tags), avgBestMatch(tags, detected));
 }
 
 function classify(similarity: number, confidence: number, floor: number): Flag['severity'] | null {

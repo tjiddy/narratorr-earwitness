@@ -37,8 +37,9 @@ export function extractionKey(p: {
   transcriptHash: string;
   model: string;
   promptVersion: string;
+  schemaVersion: string;
 }): string {
-  return sha([p.transcriptHash, p.model, p.promptVersion].join('|'));
+  return sha([p.transcriptHash, p.model, p.promptVersion, p.schemaVersion].join('|'));
 }
 
 export class Cache {

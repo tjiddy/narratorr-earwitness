@@ -12,7 +12,7 @@ export function createWhisperCppProvider(host: string): TranscribeProvider {
       form.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'intro.wav');
       form.append('temperature', '0');
       form.append('response_format', 'json');
-      const res = await fetch(`${host}/inference`, { method: 'POST', body: form });
+      const res = await fetch(`${host}/inference`, { method: 'POST', body: form, signal: opts.signal ?? null });
       if (!res.ok) throw new Error(`whisper.cpp ${res.status}: ${(await res.text()).slice(0, 300)}`);
       const data = (await res.json()) as { text?: string };
       return (data.text ?? '').trim();

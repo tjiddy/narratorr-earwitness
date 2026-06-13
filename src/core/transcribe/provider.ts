@@ -6,6 +6,7 @@ export interface TranscribeOptions {
   offsetSeconds: number;
   seconds: number;
   model: string;
+  signal?: AbortSignal | undefined;
 }
 
 export interface TranscribeProvider {

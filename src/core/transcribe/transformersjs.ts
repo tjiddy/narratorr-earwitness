@@ -26,8 +26,10 @@ export function createTransformersJsProvider(): TranscribeProvider {
   return {
     name: 'transformersjs',
     async transcribe(track, opts) {
-      const audio = await decodePcmF32(track, opts);
+      // Kick off (and memoize) the model load BEFORE the first await, so concurrent
+      // transcribes share one load instead of racing to instantiate the pipeline twice.
       asr ??= pipeline('automatic-speech-recognition', resolveModel(opts.model));
+      const audio = await decodePcmF32(track, opts);
       const run = (await asr) as unknown as (
         input: Float32Array,
         gen: Record<string, unknown>,

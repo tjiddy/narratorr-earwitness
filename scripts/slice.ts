@@ -25,7 +25,7 @@ const ffmpegPath = await resolveFfmpeg(config.ffmpegPath);
 const books = await discover(root);
 console.log(`discovered ${books.length} book(s) under ${root}\n`);
 
-const provider = createTranscribeProvider({ backend: config.whisper.backend, host: config.whisper.host });
+const provider = await createTranscribeProvider({ backend: config.whisper.backend, host: config.whisper.host });
 const cache = new Cache(config.cacheDir);
 
 for (const book of books.slice(0, limit)) {

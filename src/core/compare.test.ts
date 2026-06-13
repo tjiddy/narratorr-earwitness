@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compareAttribution, nameSimilarity, splitPeople, NAME_FLOOR } from './compare.js';
+import { compareAttribution, nameSimilarity, personSetSimilarity, splitPeople, NAME_FLOOR } from './compare.js';
 import type { Attribution } from '@shared/schemas.js';
 
 const attr = (over: Partial<Attribution>): Attribution => ({
@@ -69,5 +69,44 @@ describe('compareAttribution', () => {
       1,
     );
     expect(flags).toHaveLength(0);
+  });
+
+  it('flags a tag that credits an extra person not heard in the book (P1-5)', () => {
+    const flags = compareAttribution(
+      attr({ authors: ['Stephen King'] }),
+      attr({ authors: ['Stephen King', 'Dean Koontz'] }),
+      1,
+    );
+    expect(flags).toEqual([expect.objectContaining({ field: 'author', severity: 'mismatch' })]);
+  });
+
+  it('flags a tag that is missing a person heard in the book (P1-5)', () => {
+    const flags = compareAttribution(
+      attr({ narrators: ['Stephen King', 'Peter Straub'] }),
+      attr({ narrators: ['Stephen King'] }),
+      1,
+    );
+    expect(flags).toEqual([expect.objectContaining({ field: 'narrator', severity: 'mismatch' })]);
+  });
+});
+
+describe('personSetSimilarity (symmetry)', () => {
+  it('is symmetric in its arguments', () => {
+    const a = ['Stephen King'];
+    const b = ['Stephen King', 'Dean Koontz'];
+    expect(personSetSimilarity(a, b)).toBeCloseTo(personSetSimilarity(b, a));
+  });
+
+  it('exact set match scores 1', () => {
+    expect(personSetSimilarity(['Jane Doe', 'John Roe'], ['John Roe', 'Jane Doe'])).toBe(1);
+  });
+
+  it('a subset is penalized below the name floor', () => {
+    expect(personSetSimilarity(['Stephen King'], ['Stephen King', 'Dean Koontz'])).toBeLessThan(NAME_FLOOR);
+  });
+
+  it('empty-vs-empty is a match, empty-vs-nonempty is not', () => {
+    expect(personSetSimilarity([], [])).toBe(1);
+    expect(personSetSimilarity([], ['Stephen King'])).toBe(0);
   });
 });

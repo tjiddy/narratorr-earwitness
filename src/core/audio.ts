@@ -11,6 +11,7 @@ export interface CutOptions {
   ffmpegPath: string;
   offsetSeconds: number;
   seconds: number;
+  signal?: AbortSignal | undefined;
 }
 
 function buildArgs(track: string, opts: CutOptions, format: 's16le' | 'wav'): string[] {
@@ -31,9 +32,13 @@ function buildArgs(track: string, opts: CutOptions, format: 's16le' | 'wav'): st
   ];
 }
 
-function runFfmpeg(ffmpegPath: string, args: string[], track: string): Promise<Buffer> {
+function runFfmpeg(ffmpegPath: string, args: string[], track: string, signal?: AbortSignal | undefined): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // `signal` kills the spawned ffmpeg (and rejects via the 'error' handler) when
+    // the scan is cancelled or a timeout fires — work no longer wedges a worker.
+    const proc = signal
+      ? spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'], signal })
+      : spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     proc.stdout.on('data', (d: Buffer) => out.push(d));
@@ -52,7 +57,7 @@ function runFfmpeg(ffmpegPath: string, args: string[], track: string): Promise<B
 
 /** First `seconds` of `track` as float32 PCM @16kHz mono, normalized to [-1, 1]. */
 export async function decodePcmF32(track: string, opts: CutOptions): Promise<Float32Array> {
-  const buf = await runFfmpeg(opts.ffmpegPath, buildArgs(track, opts, 's16le'), track);
+  const buf = await runFfmpeg(opts.ffmpegPath, buildArgs(track, opts, 's16le'), track, opts.signal);
   if (buf.length === 0) throw new Error(`ffmpeg produced no audio for ${track}`);
   const i16 = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2));
   const f32 = new Float32Array(i16.length);
@@ -62,7 +67,7 @@ export async function decodePcmF32(track: string, opts: CutOptions): Promise<Flo
 
 /** First `seconds` of `track` as a 16kHz mono WAV buffer (for HTTP upload). */
 export async function cutWav(track: string, opts: CutOptions): Promise<Buffer> {
-  const buf = await runFfmpeg(opts.ffmpegPath, buildArgs(track, opts, 'wav'), track);
+  const buf = await runFfmpeg(opts.ffmpegPath, buildArgs(track, opts, 'wav'), track, opts.signal);
   if (buf.length === 0) throw new Error(`ffmpeg produced no audio for ${track}`);
   return buf;
 }

@@ -24,6 +24,17 @@ function rank(b: BookResult): number {
   return 4;
 }
 
+type Category = 'mismatch' | 'no_attribution' | 'error' | 'clean';
+
+// Mutually-exclusive triage bucket so the three concerns get their own counts/toggles
+// instead of being lumped into one diluted "flagged" number.
+function category(b: BookResult): Category {
+  if (b.error) return 'error';
+  if (b.flags.length > 0) return 'mismatch';
+  if (!b.attributionPresent) return 'no_attribution';
+  return 'clean';
+}
+
 function StatusChip({ book }: { book: BookResult }) {
   if (book.error) return <Chip className="border-rose-500/40 bg-rose-500/15 text-rose-300">error</Chip>;
   if (!book.attributionPresent)
@@ -121,21 +132,62 @@ function BookCard({ book }: { book: BookResult }) {
   );
 }
 
+function Toggle({
+  label,
+  count,
+  checked,
+  onChange,
+}: {
+  label: string;
+  count: number;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className={`flex items-center gap-2 ${count === 0 ? 'opacity-40' : ''}`}>
+      <input type="checkbox" checked={checked} disabled={count === 0} onChange={(e) => onChange(e.target.checked)} />
+      {label} ({count})
+    </label>
+  );
+}
+
 export function ResultsTable({ results }: { results: BookResult[] }) {
-  const [onlyFlagged, setOnlyFlagged] = useState(false);
+  const [filters, setFilters] = useState({ mismatch: false, no_attribution: false, error: false });
+
+  const counts = useMemo(() => {
+    const c = { mismatch: 0, no_attribution: 0, error: 0 };
+    for (const b of results) {
+      const cat = category(b);
+      if (cat !== 'clean') c[cat] += 1;
+    }
+    return c;
+  }, [results]);
+
+  const anyFilter = filters.mismatch || filters.no_attribution || filters.error;
   const sorted = useMemo(() => {
-    const filtered = onlyFlagged
-      ? results.filter((b) => b.flags.length > 0 || !b.attributionPresent || b.error)
+    const filtered = anyFilter
+      ? results.filter((b) => {
+          const cat = category(b);
+          return cat !== 'clean' && filters[cat];
+        })
       : results;
     return [...filtered].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
-  }, [results, onlyFlagged]);
+  }, [results, filters, anyFilter]);
+
+  const set = (key: keyof typeof filters) => (v: boolean) => setFilters((f) => ({ ...f, [key]: v }));
 
   return (
     <div className="space-y-3">
-      <label className="flex items-center gap-2 text-sm text-neutral-400">
-        <input type="checkbox" checked={onlyFlagged} onChange={(e) => setOnlyFlagged(e.target.checked)} />
-        only flagged ({results.filter((b) => b.flags.length > 0 || !b.attributionPresent || b.error).length})
-      </label>
+      <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm text-neutral-400">
+        <Toggle label="mismatches" count={counts.mismatch} checked={filters.mismatch} onChange={set('mismatch')} />
+        <Toggle
+          label="no attribution"
+          count={counts.no_attribution}
+          checked={filters.no_attribution}
+          onChange={set('no_attribution')}
+        />
+        <Toggle label="errors" count={counts.error} checked={filters.error} onChange={set('error')} />
+      </div>
       {sorted.map((book) => (
         <BookCard key={book.sourcePath} book={book} />
       ))}

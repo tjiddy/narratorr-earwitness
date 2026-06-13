@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 // Load .env for native dev (no-op if absent / already in env). Production passes
@@ -9,17 +10,30 @@ try {
   // no .env — rely on process.env
 }
 
+// Anchor relative cache/report dirs to the repo root — two levels up from this
+// module (src/server in dev, dist/server after bundling) — NOT process.cwd(),
+// so launching from a different directory doesn't silently relocate state.
+export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const resolveFromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(APP_ROOT, p));
+
+// Numeric env var: empty/absent → default, otherwise require an all-digits string.
+// Unlike parseInt ("60abc" → 60), a non-numeric value is rejected outright.
 const intFromString = (def: string) =>
   z
     .string()
     .default(def)
-    .transform((v) => parseInt(v || def, 10))
-    .pipe(z.number().int());
+    .transform((v) => (v.trim() === '' ? def : v.trim()))
+    .pipe(z.string().regex(/^[+-]?\d+$/, 'must be an integer').transform((v) => parseInt(v, 10)));
 
 const envSchema = z.object({
   PORT: intFromString('3000').pipe(z.number().int().min(1).max(65535)),
   NODE_ENV: z.string().default(''),
   CORS_ORIGIN: z.string().default('http://localhost:5173').transform((v) => v || 'http://localhost:5173'),
+
+  // Network exposure controls. BIND_HOST defaults to 0.0.0.0 so Docker/LAN keep
+  // working; EARWITNESS_API_KEY (when set) gates /api/*. See server/index.ts.
+  BIND_HOST: z.string().default('0.0.0.0').transform((v) => v || '0.0.0.0'),
+  EARWITNESS_API_KEY: z.string().optional(),
 
   BROWSE_ROOTS: z
     .string()
@@ -45,9 +59,17 @@ const envSchema = z.object({
   MAX_CONCURRENT_BOOKS: intFromString('2').pipe(z.number().int().min(1).max(32)),
   MAX_CONCURRENT_TRANSCRIBES: intFromString('1').pipe(z.number().int().min(1).max(16)),
 
+  // Per-call timeouts (ms) so a hung Whisper/Ollama service can't wedge a worker
+  // forever. 0 disables. Combined with the job abort signal in the pipeline.
+  TRANSCRIBE_TIMEOUT_MS: intFromString('300000').pipe(z.number().int().min(0)),
+  EXTRACT_TIMEOUT_MS: intFromString('120000').pipe(z.number().int().min(0)),
+
+  // Process-wide cap on active+queued scans (backpressure). Excess → 503.
+  MAX_ACTIVE_SCANS: intFromString('4').pipe(z.number().int().min(1).max(64)),
+
   FFMPEG_PATH: z.string().optional(),
-  CACHE_DIR: z.string().default('./.earwitness/cache').transform((v) => path.resolve(v || './.earwitness/cache')),
-  REPORTS_DIR: z.string().default('./.earwitness/reports').transform((v) => path.resolve(v || './.earwitness/reports')),
+  CACHE_DIR: z.string().default('./.earwitness/cache').transform((v) => resolveFromRoot(v || './.earwitness/cache')),
+  REPORTS_DIR: z.string().default('./.earwitness/reports').transform((v) => resolveFromRoot(v || './.earwitness/reports')),
 
   NARRATORR_URL: z.string().optional(),
   NARRATORR_API_KEY: z.string().optional(),
@@ -64,6 +86,8 @@ const mode: 'standalone' | 'narratorr' =
 
 export const config = {
   port: env.PORT,
+  bindHost: env.BIND_HOST,
+  apiKey: env.EARWITNESS_API_KEY ?? null,
   isDev: env.NODE_ENV !== 'production',
   corsOrigin: env.CORS_ORIGIN,
   mode,
@@ -74,6 +98,9 @@ export const config = {
   introOffsetSeconds: env.INTRO_OFFSET_SECONDS,
   maxConcurrentBooks: env.MAX_CONCURRENT_BOOKS,
   maxConcurrentTranscribes: env.MAX_CONCURRENT_TRANSCRIBES,
+  transcribeTimeoutMs: env.TRANSCRIBE_TIMEOUT_MS,
+  extractTimeoutMs: env.EXTRACT_TIMEOUT_MS,
+  maxActiveScans: env.MAX_ACTIVE_SCANS,
   ffmpegPath: env.FFMPEG_PATH ?? null,
   cacheDir: env.CACHE_DIR,
   reportsDir: env.REPORTS_DIR,

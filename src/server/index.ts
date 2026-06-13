@@ -1,27 +1,29 @@
-import Fastify from 'fastify';
-import cors from '@fastify/cors';
-import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import { Cache } from '@core/cache.js';
 import { ReportStore } from '@core/store.js';
 import { resolveFfmpeg } from '@core/ffmpeg.js';
-import { createTranscribeProvider } from '@core/transcribe/index.js';
+import { createTranscribeProvider, withTranscribeLimit } from '@core/transcribe/index.js';
 import { config } from './config.js';
 import { ScanJobService } from './services/scan-job.service.js';
-import { registerRoutes } from './routes/index.js';
+import { buildApp } from './app.js';
+
+function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+}
 
 async function main(): Promise<void> {
-  const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
-  app.setValidatorCompiler(validatorCompiler);
-  app.setSerializerCompiler(serializerCompiler);
-
-  await app.register(cors, { origin: config.corsOrigin });
-
   // ffmpeg is required for audio cutting; fall back to bare "ffmpeg" so the server
   // still boots and /api/config reports the problem rather than crashing.
   const ffmpegPath = await resolveFfmpeg(config.ffmpegPath).catch(() => config.ffmpegPath ?? 'ffmpeg');
 
+  // One shared, concurrency-limited provider so MAX_CONCURRENT_TRANSCRIBES caps the
+  // heavy STT step process-wide even while books run in parallel.
+  const transcribe = withTranscribeLimit(
+    await createTranscribeProvider({ backend: config.whisper.backend, host: config.whisper.host }),
+    config.maxConcurrentTranscribes,
+  );
+
   const scans = new ScanJobService({
-    transcribe: createTranscribeProvider({ backend: config.whisper.backend, host: config.whisper.host }),
+    transcribe,
     cache: new Cache(config.cacheDir),
     reportStore: new ReportStore(config.reportsDir),
     ffmpegPath,
@@ -29,13 +31,25 @@ async function main(): Promise<void> {
     seconds: config.introSeconds,
     whisperModel: config.whisper.model,
     ollama: config.ollama,
+    transcribeTimeoutMs: config.transcribeTimeoutMs,
+    extractTimeoutMs: config.extractTimeoutMs,
     maxConcurrentBooks: config.maxConcurrentBooks,
+    maxActiveScans: config.maxActiveScans,
   });
 
-  registerRoutes(app, { scans });
+  const app = await buildApp({ scans });
 
-  await app.listen({ port: config.port, host: '0.0.0.0' });
-  app.log.info(`earwitness server on :${config.port} (mode=${config.mode}, whisper=${config.whisper.backend})`);
+  await app.listen({ port: config.port, host: config.bindHost });
+  app.log.info(`earwitness on ${config.bindHost}:${config.port} (mode=${config.mode}, whisper=${config.whisper.backend})`);
+  app.log.info(`cache=${config.cacheDir} reports=${config.reportsDir}`);
+
+  // Loud warning (not a hard fail — homelab use) when the API is open on a
+  // non-loopback interface: the filesystem-browsing API is reachable from the LAN.
+  if (!isLoopbackHost(config.bindHost) && config.apiKey === null) {
+    app.log.warn(
+      `SECURITY: bound to ${config.bindHost} with NO EARWITNESS_API_KEY set — /api is reachable unauthenticated on the network. Set EARWITNESS_API_KEY or BIND_HOST=127.0.0.1.`,
+    );
+  }
 }
 
 main().catch((err) => {

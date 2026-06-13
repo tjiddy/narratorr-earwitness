@@ -43,61 +43,163 @@ function naturalCompare(a: string, b: string): number {
   return ka.length - kb.length;
 }
 
-async function audioFilesIn(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  return entries
-    .filter((e) => e.isFile() && AUDIO_EXTS.has(path.extname(e.name).toLowerCase()))
-    .map((e) => e.name)
-    .sort(naturalCompare)
-    .map((name) => path.join(dir, name));
+// Walk recursion is bounded: real libraries nest Author/Series/Book/disc, not 16
+// deep. The cap is a backstop against a pathological tree (or a symlink loop the
+// visited-set somehow misses).
+const MAX_DEPTH = 16;
+
+const isAudio = (name: string) => AUDIO_EXTS.has(path.extname(name).toLowerCase());
+const isContainer = (file: string) => CONTAINER_EXTS.has(path.extname(file).toLowerCase());
+
+function caseFold(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
 }
 
-function makeBook(source: string, name: string, tracks: string[]): Book {
+function isWithin(child: string, root: string): boolean {
+  const c = caseFold(child);
+  const r = caseFold(root);
+  if (c === r) return true;
+  return c.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+}
+
+async function realOrNull(p: string): Promise<string | null> {
+  try {
+    return await fs.realpath(p);
+  } catch {
+    return null;
+  }
+}
+
+function makeBook(source: string, name: string, tracks: string[], reason?: string): Book {
   const isMultifile = tracks.length > 1;
   return {
     name,
     source,
     introTrackPath: tracks[0]!,
-    introTrackReason: isMultifile
-      ? `first of ${tracks.length} tracks (natural sort)`
-      : 'single file',
+    introTrackReason: reason ?? (isMultifile ? `first of ${tracks.length} tracks (natural sort)` : 'single file'),
     tracks,
     isMultifile,
   };
 }
 
-const isContainer = (file: string) => CONTAINER_EXTS.has(path.extname(file).toLowerCase());
+// Reduce a filename stem to its non-numeric "skeleton" so chapter files
+// ("Chapter 1", "Chapter 2") collapse to one key while distinct titles
+// ("Dune", "Foundation") stay separate.
+function skeleton(file: string): string {
+  return path.parse(file).name
+    .toLowerCase()
+    .replace(/\d+/g, ' ')
+    .replace(/[^a-z]+/g, ' ')
+    .trim();
+}
+
+/** Longest common (case-insensitive) filename-stem prefix of a track group, trimmed. */
+function commonName(files: string[]): string | null {
+  const stems = files.map((f) => path.parse(f).name);
+  let prefix = stems[0] ?? '';
+  for (const s of stems.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < s.length && prefix[i]!.toLowerCase() === s[i]!.toLowerCase()) i++;
+    prefix = prefix.slice(0, i);
+  }
+  prefix = prefix.replace(/[\s\-_,.]+$/, '').trim();
+  return prefix.length >= 2 ? prefix : null;
+}
+
+/**
+ * Group loose (non-container) audio siblings into books. A flat folder of N
+ * distinct loose files used to collapse into ONE book transcribing only track 1;
+ * we now split by name skeleton, so distinct titles become separate books while a
+ * single coherent chapter series stays one directory-named book.
+ */
+function groupLooseFiles(dir: string, files: string[]): Book[] {
+  if (files.length === 0) return [];
+
+  const groups = new Map<string, string[]>();
+  for (const f of files) {
+    const key = skeleton(f);
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(f);
+  }
+
+  // One coherent series (or a single file) → keep the directory-named book.
+  if (groups.size <= 1) return [makeBook(dir, path.basename(dir), files)];
+
+  // Multiple distinct name patterns sharing a flat folder → separate books.
+  const books: Book[] = [];
+  for (const tracks of groups.values()) {
+    if (tracks.length === 1) {
+      books.push(
+        makeBook(tracks[0]!, path.parse(tracks[0]!).name, tracks, 'loose file in a mixed flat folder'),
+      );
+    } else {
+      books.push(
+        makeBook(
+          tracks[0]!,
+          commonName(tracks) ?? path.parse(tracks[0]!).name,
+          tracks,
+          `${tracks.length} tracks grouped by name pattern in a flat folder (ambiguous — verify)`,
+        ),
+      );
+    }
+  }
+  return books;
+}
 
 export async function discover(root: string): Promise<Book[]> {
   const resolved = path.resolve(root);
-  const st = await fs.stat(resolved).catch(() => null);
-  if (!st) throw new Error(`path does not exist: ${resolved}`);
+  const rootReal = await realOrNull(resolved);
+  if (!rootReal) throw new Error(`path does not exist: ${resolved}`);
 
+  const st = await fs.stat(rootReal);
   if (st.isFile()) {
-    if (AUDIO_EXTS.has(path.extname(resolved).toLowerCase())) {
-      return [makeBook(resolved, path.parse(resolved).name, [resolved])];
-    }
+    if (isAudio(rootReal)) return [makeBook(rootReal, path.parse(rootReal).name, [rootReal])];
     return [];
   }
 
+  // Captured non-null for the closure (control-flow narrowing doesn't cross into it).
+  const scanRoot: string = rootReal;
   const books: Book[] = [];
+  const visited = new Set<string>();
 
-  // Each .m4b is its own book; the remaining (chapter-style) files in a directory
-  // group into one multi-file book named after that directory.
-  async function walk(dir: string): Promise<void> {
-    const files = await audioFilesIn(dir);
-    for (const container of files.filter(isContainer)) {
+  // ONE readdir per directory (partitioned into files/subdirs). Symlinked dirs are
+  // realpath-resolved and only followed if they stay inside the scan root — a link
+  // to "/" would otherwise walk the whole filesystem (DoS + containment bypass).
+  async function walk(real: string, depth: number): Promise<void> {
+    if (depth > MAX_DEPTH) return;
+    const key = caseFold(real);
+    if (visited.has(key)) return;
+    visited.add(key);
+
+    const entries = await fs.readdir(real, { withFileTypes: true }).catch(() => []);
+    const audio: string[] = [];
+    const subdirs: string[] = [];
+    for (const e of entries) {
+      const full = path.join(real, e.name);
+      if (e.isDirectory()) {
+        subdirs.push(full);
+      } else if (e.isFile()) {
+        if (isAudio(e.name)) audio.push(full);
+      } else if (e.isSymbolicLink()) {
+        const target = await realOrNull(full);
+        if (!target) continue;
+        const tst = await fs.stat(target).catch(() => null);
+        if (tst?.isDirectory()) {
+          if (isWithin(target, scanRoot)) subdirs.push(target);
+        } else if (tst?.isFile() && isAudio(e.name)) {
+          audio.push(full);
+        }
+      }
+    }
+
+    audio.sort((a, b) => naturalCompare(path.basename(a), path.basename(b)));
+    for (const container of audio.filter(isContainer)) {
       books.push(makeBook(container, path.parse(container).name, [container]));
     }
-    const chapters = files.filter((f) => !isContainer(f));
-    if (chapters.length > 0) books.push(makeBook(dir, path.basename(dir), chapters));
+    books.push(...groupLooseFiles(real, audio.filter((f) => !isContainer(f))));
 
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      if (e.isDirectory()) await walk(path.join(dir, e.name));
-    }
+    for (const sub of subdirs) await walk(sub, depth + 1);
   }
-  await walk(resolved);
+  await walk(scanRoot, 0);
 
   return books.sort((a, b) => naturalCompare(a.name, b.name));
 }

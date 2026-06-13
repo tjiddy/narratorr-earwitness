@@ -16,6 +16,13 @@ beforeAll(async () => {
   }
   // Single-file book sitting loose under root.
   await fs.writeFile(path.join(root, 'It.m4b'), '');
+
+  // Flat folder of DISTINCT loose books (must not collapse into one book).
+  const flat = path.join(root, 'Loose');
+  await fs.mkdir(flat);
+  for (const n of ['Dune.mp3', 'Foundation.mp3', 'Neuromancer.mp3']) {
+    await fs.writeFile(path.join(flat, n), '');
+  }
 });
 
 afterAll(async () => {
@@ -43,5 +50,16 @@ describe('discover', () => {
     expect(it).toBeDefined();
     expect(it?.isMultifile).toBe(false);
     expect(it?.introTrackReason).toBe('single file');
+  });
+
+  it('splits a flat folder of distinct loose files into separate books (P2-3)', async () => {
+    const books = await discover(root);
+    for (const title of ['Dune', 'Foundation', 'Neuromancer']) {
+      const b = books.find((x) => x.name === title);
+      expect(b, title).toBeDefined();
+      expect(b?.isMultifile).toBe(false);
+    }
+    // The coherent chapter series must still be ONE book, not split.
+    expect(books.filter((b) => b.name === 'The Stand')).toHaveLength(1);
   });
 });

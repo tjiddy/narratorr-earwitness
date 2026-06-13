@@ -3,6 +3,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { configResponseSchema } from '@shared/schemas.js';
 import { ffmpegOk } from '@core/ffmpeg.js';
 import { config } from '../config.js';
+import { isTrustedRequest } from '../auth.js';
 
 async function reachable(url: string): Promise<boolean> {
   try {
@@ -17,7 +18,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
   app.withTypeProvider<ZodTypeProvider>().get(
     '/api/config',
     { schema: { response: { 200: configResponseSchema } } },
-    async () => {
+    async (req) => {
       const [ollamaReachable, whisperReachable, ff] = await Promise.all([
         reachable(`${config.ollama.host}/api/version`),
         // transformers.js runs in-process — no service to reach.
@@ -26,18 +27,24 @@ export function registerConfigRoutes(app: FastifyInstance): void {
           : reachable(`${config.whisper.host}/health`),
         ffmpegOk(config.ffmpegPath),
       ]);
+      // Only trusted callers see absolute paths / internal hostnames.
+      const trusted = isTrustedRequest(req);
       return {
         mode: config.mode,
-        browseRoots: config.browseRoots,
+        browseRoots: trusted ? config.browseRoots : [],
         introSeconds: config.introSeconds,
-        ollama: { host: config.ollama.host, model: config.ollama.model, reachable: ollamaReachable },
+        ollama: {
+          host: trusted ? config.ollama.host : null,
+          model: config.ollama.model,
+          reachable: ollamaReachable,
+        },
         whisper: {
-          host: config.whisper.host,
+          host: trusted ? config.whisper.host : null,
           backend: config.whisper.backend,
           model: config.whisper.model,
           reachable: whisperReachable,
         },
-        ffmpeg: ff,
+        ffmpeg: { path: trusted ? ff.path : null, ok: ff.ok },
       };
     },
   );

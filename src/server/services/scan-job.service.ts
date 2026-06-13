@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { BookResult, ScanProgress, ScanResults, ScanStatus } from '@shared/schemas.js';
+import {
+  scanResultsSchema,
+  type BookResult,
+  type ScanProgress,
+  type ScanResults,
+  type ScanStatus,
+} from '@shared/schemas.js';
 import { discover } from '@core/discover.js';
 import { processBook, type ProcessDeps } from '@core/pipeline.js';
 import type { ReportStore } from '@core/store.js';
@@ -9,6 +15,7 @@ import type { ReportStore } from '@core/store.js';
 // store gives durability; this gives live progress.
 
 const JOB_TTL_MS = 30 * 60 * 1000;
+const TERMINAL: ReadonlySet<ScanStatus> = new Set(['completed', 'failed', 'cancelled']);
 
 interface ScanJob {
   id: string;
@@ -17,15 +24,24 @@ interface ScanJob {
   status: ScanStatus;
   total: number;
   processed: number;
-  currentBook: string | null;
+  currentBooks: Set<string>;
   results: BookResult[];
   error: string | null;
   abort: AbortController;
 }
 
-export interface ScanServiceDeps extends Omit<ProcessDeps, never> {
+export interface ScanServiceDeps extends ProcessDeps {
   reportStore: ReportStore;
   maxConcurrentBooks: number;
+  maxActiveScans: number;
+}
+
+/** Thrown by start() when the process-global scan cap is hit. Route → 503. */
+export class ScanCapacityError extends Error {
+  constructor(readonly limit: number) {
+    super(`scan capacity reached (${limit} active)`);
+    this.name = 'ScanCapacityError';
+  }
 }
 
 export class ScanJobService {
@@ -33,7 +49,17 @@ export class ScanJobService {
 
   constructor(private readonly deps: ScanServiceDeps) {}
 
+  private activeCount(): number {
+    let active = 0;
+    for (const job of this.jobs.values()) if (!TERMINAL.has(job.status)) active += 1;
+    return active;
+  }
+
   start(root: string): string {
+    // Process-global backpressure: reject when too many scans are already in flight.
+    if (this.activeCount() >= this.deps.maxActiveScans) {
+      throw new ScanCapacityError(this.deps.maxActiveScans);
+    }
     const id = randomUUID();
     const job: ScanJob = {
       id,
@@ -42,7 +68,7 @@ export class ScanJobService {
       status: 'pending',
       total: 0,
       processed: 0,
-      currentBook: null,
+      currentBooks: new Set(),
       results: [],
       error: null,
       abort: new AbortController(),
@@ -57,10 +83,24 @@ export class ScanJobService {
     return job ? this.toProgress(job) : null;
   }
 
-  results(id: string): ScanResults | null {
+  // Async + durable fallback: once a job is TTL-evicted (or after a restart) the
+  // live results are gone, so we read the flushed report off disk and re-validate it.
+  async results(id: string): Promise<ScanResults | null> {
     const job = this.jobs.get(id);
-    if (!job) return null;
-    return { ...this.toProgress(job), results: job.results };
+    if (job) return { ...this.toProgress(job), results: job.results };
+    try {
+      const report = await this.deps.reportStore.read(id);
+      if (!report) return null;
+      const parsed = scanResultsSchema.safeParse(report);
+      if (!parsed.success) {
+        console.warn(`report ${id} on disk failed schema validation`);
+        return null;
+      }
+      return parsed.data;
+    } catch (err) {
+      console.warn(`failed to read report ${id}:`, err);
+      return null;
+    }
   }
 
   cancel(id: string): boolean {
@@ -78,7 +118,7 @@ export class ScanJobService {
       status: job.status,
       total: job.total,
       processed: job.processed,
-      currentBook: job.currentBook,
+      currentBooks: [...job.currentBooks],
       error: job.error,
     };
   }
@@ -92,19 +132,31 @@ export class ScanJobService {
 
       await mapLimit(books, this.deps.maxConcurrentBooks, async (book) => {
         if (job.abort.signal.aborted) return;
-        job.currentBook = book.name;
-        const result = await processBook(book, this.deps);
-        job.results.push(result);
-        job.processed += 1;
-        await this.flush(job); // incremental — survive a crash mid-scan
+        job.currentBooks.add(book.name);
+        try {
+          const result = await processBook(book, { ...this.deps, signal: job.abort.signal });
+          job.results.push(result);
+          job.processed += 1;
+          await this.flush(job); // incremental — survive a crash mid-scan
+        } catch (err) {
+          // processBook only throws on cancellation; swallow so we end 'cancelled'.
+          if (job.abort.signal.aborted) return;
+          throw err;
+        } finally {
+          job.currentBooks.delete(book.name);
+        }
       });
 
       job.status = job.abort.signal.aborted ? 'cancelled' : 'completed';
     } catch (err) {
-      job.status = 'failed';
-      job.error = err instanceof Error ? err.message : String(err);
+      if (job.abort.signal.aborted) {
+        job.status = 'cancelled';
+      } else {
+        job.status = 'failed';
+        job.error = err instanceof Error ? err.message : String(err);
+      }
     } finally {
-      job.currentBook = null;
+      job.currentBooks.clear();
       await this.flush(job);
       this.scheduleCleanup(job.id);
     }
@@ -113,8 +165,10 @@ export class ScanJobService {
   private async flush(job: ScanJob): Promise<void> {
     try {
       await this.deps.reportStore.write({ ...this.toProgress(job), results: job.results });
-    } catch {
-      // a failed flush shouldn't kill the scan
+    } catch (err) {
+      // A failed flush shouldn't kill the scan, but it must not be silent either —
+      // it means the durable copy is stale.
+      console.warn(`failed to flush report ${job.id}:`, err);
     }
   }
 

@@ -1,30 +1,42 @@
 import type { BrowseResponse, ConfigResponse, ScanProgress, ScanResults } from '@shared/schemas.js';
 
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+// Surface the server's { error } envelope (all routes use it, incl. the normalized
+// 400/500 handler) instead of re-wrapping raw status text.
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    const body: unknown = await res.json();
+    if (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string') {
+      return body.error;
+    }
+  } catch {
+    // body wasn't JSON — fall through to status text
+  }
+  return `${res.status} ${res.statusText}`.trim();
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) throw new Error(await errorMessage(res));
   return (await res.json()) as T;
 }
 
-export const getConfig = () => getJson<ConfigResponse>('/api/config');
+const jsonPost = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export const getConfig = () => request<ConfigResponse>('/api/config');
 
 export const browse = (path?: string) =>
-  getJson<BrowseResponse>(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`);
+  request<BrowseResponse>(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`);
 
-export const getScan = (id: string) => getJson<ScanProgress>(`/api/scans/${id}`);
+export const getScan = (id: string) => request<ScanProgress>(`/api/scans/${id}`);
 
-export const getResults = (id: string) => getJson<ScanResults>(`/api/scans/${id}/results`);
+export const getResults = (id: string) => request<ScanResults>(`/api/scans/${id}/results`);
 
-export async function startScan(root: string): Promise<string> {
-  const res = await fetch('/api/scans', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ source: 'local', root }),
-  });
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-  return ((await res.json()) as { id: string }).id;
-}
+export const startScan = (root: string) =>
+  request<{ id: string }>('/api/scans', jsonPost({ source: 'local', root })).then((r) => r.id);
 
-export async function cancelScan(id: string): Promise<void> {
-  await fetch(`/api/scans/${id}/cancel`, { method: 'POST' });
-}
+export const cancelScan = (id: string) =>
+  request<{ cancelled: boolean }>(`/api/scans/${id}/cancel`, { method: 'POST' });

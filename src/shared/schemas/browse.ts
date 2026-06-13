@@ -13,7 +13,7 @@ export const browseEntrySchema = z.object({
 export const browseResponseSchema = z.object({
   cwd: z.string(),
   parent: z.string().nullable(),
-  roots: z.array(z.string()),
+  browseRoots: z.array(z.string()),
   entries: z.array(browseEntrySchema),
 });
 export type BrowseResponse = z.infer<typeof browseResponseSchema>;

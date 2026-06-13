@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ReadinessBanner } from './components/ReadinessBanner';
 import { FolderPicker } from './components/FolderPicker';
 import { ResultsTable } from './components/ResultsTable';
-import { startScan, getResults } from './api';
+import { startScan, getScan, getResults, cancelScan } from './api';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
@@ -19,16 +19,34 @@ const STATUS_LABEL: Record<string, string> = {
 export function App() {
   const [scanId, setScanId] = useState<string | null>(null);
   const start = useMutation({ mutationFn: startScan, onSuccess: setScanId });
+  const cancel = useMutation({ mutationFn: cancelScan });
 
-  const scan = useQuery({
-    queryKey: ['results', scanId],
-    queryFn: () => getResults(scanId as string),
+  // Poll the LIGHT progress endpoint every second…
+  const progress = useQuery({
+    queryKey: ['scan', scanId],
+    queryFn: () => getScan(scanId as string),
     enabled: scanId !== null,
     refetchInterval: (q) => (q.state.data && TERMINAL.has(q.state.data.status) ? false : 1000),
   });
 
-  const data = scan.data;
+  // …and pull the HEAVY results only when progress advances or the scan ends,
+  // instead of re-downloading every book list once a second.
+  const results = useQuery({
+    queryKey: ['results', scanId],
+    queryFn: () => getResults(scanId as string),
+    enabled: scanId !== null,
+  });
+
+  const processed = progress.data?.processed ?? 0;
+  const status = progress.data?.status;
+  const { refetch: refetchResults } = results;
+  useEffect(() => {
+    if (scanId) void refetchResults();
+  }, [scanId, processed, status, refetchResults]);
+
+  const data = progress.data;
   const pct = data && data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+  const active = data ? !TERMINAL.has(data.status) : false;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100">
@@ -39,7 +57,13 @@ export function App() {
             <p className="text-sm text-neutral-500">Identify audiobooks by listening to the intro.</p>
           </div>
           {scanId && (
-            <button className="text-sm text-neutral-400 hover:text-neutral-200" onClick={() => setScanId(null)}>
+            <button
+              className="text-sm text-neutral-400 hover:text-neutral-200"
+              onClick={() => {
+                setScanId(null);
+                cancel.reset();
+              }}
+            >
               ← new scan
             </button>
           )}
@@ -56,20 +80,31 @@ export function App() {
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
               <div className="flex items-center justify-between text-sm">
                 <span className="font-medium text-neutral-300">{STATUS_LABEL[data.status] ?? data.status}</span>
-                <span className="text-neutral-500">
-                  {data.processed}/{data.total || '…'}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-neutral-500">
+                    {data.processed}/{data.total || '…'}
+                  </span>
+                  {active && (
+                    <button
+                      className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 enabled:hover:bg-neutral-800 disabled:opacity-40"
+                      disabled={cancel.isPending}
+                      onClick={() => scanId && cancel.mutate(scanId)}
+                    >
+                      {cancel.isPending ? 'Cancelling…' : 'Cancel'}
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-800">
                 <div className="h-full bg-indigo-500 transition-all" style={{ width: `${pct}%` }} />
               </div>
-              {data.currentBook && !TERMINAL.has(data.status) && (
-                <p className="mt-2 truncate text-xs text-neutral-500">scanning: {data.currentBook}</p>
+              {data.currentBooks.length > 0 && active && (
+                <p className="mt-2 truncate text-xs text-neutral-500">scanning: {data.currentBooks.join(', ')}</p>
               )}
               {data.error && <p className="mt-2 text-sm text-rose-400">{data.error}</p>}
             </div>
 
-            {data.results.length > 0 && <ResultsTable results={data.results} />}
+            {results.data && results.data.results.length > 0 && <ResultsTable results={results.data.results} />}
           </section>
         )}
 

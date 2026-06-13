@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { extractionSchema, type Extraction } from '@shared/schemas.js';
+import { sha } from './cache.js';
 
-// Bump when the prompt or schema changes — it's part of the extraction cache key,
+// Bump when the PROMPT wording changes — it's part of the extraction cache key,
 // so old cached extractions are invalidated automatically.
 export const PROMPT_VERSION = 'v1';
 
@@ -19,9 +20,14 @@ Rules:
 // JSON Schema for Ollama's structured-output `format`, derived from the zod schema.
 const jsonSchema = z.toJSONSchema(extractionSchema);
 
+// Derived from the JSON schema itself, so ANY change to the extraction shape
+// invalidates the extraction cache automatically (part of the cache key).
+export const SCHEMA_VERSION = sha(JSON.stringify(jsonSchema)).slice(0, 12);
+
 export interface ExtractOptions {
   host: string;
   model: string;
+  signal?: AbortSignal | undefined;
 }
 
 export async function extract(transcript: string, opts: ExtractOptions): Promise<Extraction> {
@@ -40,6 +46,7 @@ export async function extract(transcript: string, opts: ExtractOptions): Promise
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: opts.signal ?? null,
   });
   if (!res.ok) throw new Error(`ollama ${res.status}: ${(await res.text()).slice(0, 300)}`);
 

@@ -1,6 +1,6 @@
 import { extractionSchema, type Attribution, type BookResult, type Extraction } from '@shared/schemas.js';
 import type { Book } from './discover.js';
-import { Cache, fileIdentity, sha, transcriptKey, extractionKey } from './cache.js';
+import { type Cache, fileIdentity, sha, transcriptKey, extractionKey } from './cache.js';
 import type { TranscribeProvider } from './transcribe/index.js';
 import { extract, PROMPT_VERSION, SCHEMA_VERSION } from './extract.js';
 import { readTags } from './tags.js';

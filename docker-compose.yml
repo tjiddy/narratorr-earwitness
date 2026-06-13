@@ -1,0 +1,77 @@
+# Sample homelab stack — GPU-less. The app runs Whisper IN-PROCESS (transformers.js),
+# so there is no separate STT service; the only sidecar is Ollama. The app image
+# serves both the API and the UI on :3000.
+#
+# Quick start:
+#   LIBRARY_PATH=/srv/audiobooks EARWITNESS_API_KEY=$(openssl rand -hex 24) docker compose up -d
+#   open http://<host>:3000
+#
+# Required:  LIBRARY_PATH  — host folder of audiobooks (mounted read-only).
+# Strongly recommended on a LAN:  EARWITNESS_API_KEY  — otherwise /api is open
+#   (the app logs a loud warning at boot). See DOCKER.md.
+
+services:
+  earwitness:
+    build: .
+    # image: ghcr.io/tjiddy/narratorr-earwitness:latest   # use instead of build: if you publish it
+    ports:
+      - "3000:3000"
+    environment:
+      BIND_HOST: 0.0.0.0
+      EARWITNESS_API_KEY: ${EARWITNESS_API_KEY:-}
+      BROWSE_ROOTS: /library
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      # GPU-less → in-process CPU Whisper. base.en is fast but mangles proper nouns;
+      # bump to small.en / medium for better author/narrator accuracy (slower).
+      WHISPER_BACKEND: transformersjs
+      WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
+      CACHE_DIR: /data/cache
+      REPORTS_DIR: /data/reports
+      TRANSFORMERS_CACHE: /data/models
+    volumes:
+      - ${LIBRARY_PATH:?set LIBRARY_PATH to your audiobooks folder}:/library:ro
+      - earwitness-data:/data
+    depends_on:
+      ollama-pull:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    restart: unless-stopped
+    # GPU (optional) — uncomment on a capable host to accelerate extraction. You can
+    # also run a real GPU Whisper service and point the app at it via WHISPER_BACKEND=
+    # openai-compat + WHISPER_HOST instead of the in-process transformers.js fallback.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # One-shot: pull the extraction model INTO the ollama service, then exit. The app
+  # waits for this to finish so the first scan never hits a "model not found".
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['ollama pull "$$OLLAMA_MODEL"']
+    restart: "no"
+
+volumes:
+  earwitness-data:
+  ollama-models:

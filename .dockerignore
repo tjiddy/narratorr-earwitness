@@ -1,0 +1,21 @@
+# Keep secrets, local state, and build output out of the build context entirely.
+.git
+.gitignore
+node_modules
+dist
+coverage
+.earwitness
+.env
+*.log
+.DS_Store
+
+# Working docs / review notes — not needed in the image.
+.reviews
+FIXES.md
+REVIEW.md
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+DOCKER.md

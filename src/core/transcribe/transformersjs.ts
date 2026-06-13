@@ -1,10 +1,16 @@
-import { pipeline } from '@huggingface/transformers';
+import { pipeline, env } from '@huggingface/transformers';
 import { decodePcmF32 } from '../audio.js';
 import type { TranscribeProvider } from './provider.js';
 
 // DEV / CPU-only fallback provider — in-process, no external service. Explicitly
 // NOT the production path (that's the external GPU Whisper service via openai-compat).
 // Lets us validate the whole pipeline with zero infra.
+
+// transformers.js caches downloaded weights under node_modules by default, which a
+// container rebuild/restart discards. Point it at a configurable dir (a mounted
+// volume in Docker) so weights persist. Only applied when this backend is selected.
+const TRANSFORMERS_CACHE = process.env.TRANSFORMERS_CACHE;
+if (TRANSFORMERS_CACHE) env.cacheDir = TRANSFORMERS_CACHE;
 
 const MODEL_MAP: Record<string, string> = {
   'large-v3-turbo': 'onnx-community/whisper-large-v3-turbo',

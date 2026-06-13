@@ -1,0 +1,146 @@
+name: Build & Push Docker Image
+run-name: Docker build for ${{ github.ref_name }}
+
+# Build/publish only — no deploy. Mirrors the narratorr / narrator-request pipeline,
+# adapted to this repo (default branch `master`, no lint script, no /api/health):
+#   - semver tag `vX.Y.Z` → :latest + :X.Y.Z + :X.Y on Docker Hub + GHCR, plus a GitHub Release
+#   - manual run (workflow_dispatch) → :edge (bleeding edge; pull manually)
+# Auto-build on every push is intentionally off — tag a release or dispatch manually.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch: {}
+
+env:
+  IMAGE_NAME: narratorr/narratorr-earwitness
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  docker:
+    needs: [quality-gates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub Release on the semver-tag path
+      packages: write   # push images to GHCR
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate Docker Hub credentials
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::Registry credentials missing. Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo secrets."
+            exit 1
+          fi
+
+      - name: Docker metadata (tag matrix)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.IMAGE_NAME }}
+            ghcr.io/${{ github.repository }}
+          # Release (semver tag): :X.Y.Z + :X.Y, and :latest auto-added by flavor latest=auto.
+          # Manual dispatch (non-tag ref): :edge only.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=edge,enable=${{ github.ref_type != 'tag' }}
+
+      - name: Set up QEMU (for ARM64)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Report image size
+        run: |
+          docker images ${{ env.IMAGE_NAME }} --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" || true
+          echo "Image size is informational only — no hard gate."
+
+      - name: Verify multi-arch manifest
+        run: |
+          MANIFEST=$(docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }} 2>&1)
+          echo "$MANIFEST"
+          echo "$MANIFEST" | grep -q 'linux/amd64' || { echo "::error::manifest missing linux/amd64"; exit 1; }
+          echo "$MANIFEST" | grep -q 'linux/arm64' || { echo "::error::manifest missing linux/arm64"; exit 1; }
+          echo "Multi-arch manifest verified: linux/amd64 + linux/arm64"
+
+      - name: Smoke test container
+        run: |
+          # Boots standalone with no external services; the SPA shell at / is public
+          # (even with an API key set) and serves instantly, so it's a clean liveness probe.
+          docker run -d --name smoke-test \
+            -e BIND_HOST=0.0.0.0 \
+            -p 3199:3000 \
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3199/ > /dev/null 2>&1 && break
+            sleep 1
+          done
+          HTTP_STATUS=$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3199/ || echo 000)
+          NODE_VERSION=$(docker exec smoke-test node --version || echo unknown)
+          echo "ui=$HTTP_STATUS node=$NODE_VERSION"
+          docker rm -f smoke-test > /dev/null 2>&1 || true
+
+          [ "$HTTP_STATUS" = "200" ] || { echo "::error::smoke test failed — GET / returned $HTTP_STATUS"; exit 1; }
+          echo "$NODE_VERSION" | grep -q '^v24\.' || { echo "::error::expected Node v24.*, got $NODE_VERSION"; exit 1; }
+          echo "Smoke test passed (HTTP $HTTP_STATUS, Node $NODE_VERSION)"
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

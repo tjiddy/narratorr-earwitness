@@ -84,10 +84,15 @@ const env = parsed.data;
 const mode: 'standalone' | 'narratorr' =
   env.NARRATORR_URL && env.NARRATORR_API_KEY ? 'narratorr' : 'standalone';
 
+// Compose substitutes an unset `${VAR}` to an EMPTY STRING (not "absent"), so treat
+// empty/whitespace as "no key" — otherwise a blank EARWITNESS_API_KEY silently locks
+// /api behind a bearer of empty string that nothing ever sends.
+export const normalizeApiKey = (v: string | undefined): string | null => v?.trim() || null;
+
 export const config = {
   port: env.PORT,
   bindHost: env.BIND_HOST,
-  apiKey: env.EARWITNESS_API_KEY ?? null,
+  apiKey: normalizeApiKey(env.EARWITNESS_API_KEY),
   isDev: env.NODE_ENV !== 'production',
   corsOrigin: env.CORS_ORIGIN,
   mode,

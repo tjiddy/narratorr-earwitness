@@ -1,6 +1,6 @@
 import { extractionSchema, type Attribution, type BookResult, type Extraction } from '@shared/schemas.js';
 import type { Book } from './discover.js';
-import { type Cache, type FileIdentity, fileIdentity, sha, transcriptKey, extractionKey } from './cache.js';
+import { type Cache, fileIdentity, sha, transcriptKey, extractionKey } from './cache.js';
 import type { TranscribeProvider } from './transcribe/index.js';
 import { extract, PROMPT_VERSION, SCHEMA_VERSION } from './extract.js';
 import { readTags, getAudioDuration } from './tags.js';
@@ -130,21 +130,21 @@ function isComplete(a: WindowAnalysis): boolean {
 }
 
 /**
- * Transcribe + extract + evidence-guard ONE window of the file (head or tail). Both
- * the transcript and the extraction are content-addressed in the cache (the window
- * offset is part of the transcript key), so head and tail never collide and re-runs
- * are cheap. This makes no head-vs-tail decision — the caller orchestrates that.
+ * Transcribe + extract + evidence-guard ONE window of ONE track (head or tail). The
+ * transcript cache key includes BOTH the sampled track path and the window offset, so
+ * head/tail — even when they come from different files (a multi-file book) — never
+ * collide and re-runs are cheap. Makes no head-vs-tail decision; the caller does.
  */
 async function analyzeWindow(
   book: Book,
   deps: ProcessDeps,
-  identity: FileIdentity,
-  win: { offset: number; seconds: number; label: 'head' | 'tail' },
+  win: { track: string; offset: number; seconds: number; label: 'head' | 'tail' },
 ): Promise<WindowAnalysis> {
   const log = deps.logger;
+  const identity = await fileIdentity(win.track);
 
   const tKey = transcriptKey({
-    introTrackPath: book.introTrackPath,
+    introTrackPath: win.track,
     identity,
     offset: win.offset,
     seconds: win.seconds,
@@ -154,7 +154,7 @@ async function analyzeWindow(
   let transcript = await deps.cache.get<string>('transcript', tKey);
   const transcriptCached = transcript !== null;
   if (transcript === null) {
-    transcript = await deps.transcribe.transcribe(book.introTrackPath, {
+    transcript = await deps.transcribe.transcribe(win.track, {
       ffmpegPath: deps.ffmpegPath,
       offsetSeconds: win.offset,
       seconds: win.seconds,
@@ -250,12 +250,13 @@ async function analyzeWindow(
 }
 
 /**
- * Run one book through the full pipeline. Samples the HEAD (publisher intro) first;
- * if that doesn't yield a complete attribution, samples the TAIL (Audible & co. put
- * the credit at the end) and keeps whichever window heard more. Only books the head
- * can't resolve pay for a second transcription. Transcript + extraction are cached,
- * so re-runs of unchanged files are cheap. Per-book errors are captured into the
- * result rather than thrown — one bad file shouldn't sink a whole scan.
+ * Run one book through the full pipeline. Samples the HEAD of the first track (publisher
+ * intro) first; if that doesn't yield a complete attribution, samples the TAIL of the
+ * LAST track (Audible & co. put the credit at the end — which for a multi-file book is
+ * in the final track, not the tail of track 1) and keeps whichever window heard more.
+ * Only books the head can't resolve pay for a second transcription. Transcript +
+ * extraction are cached, so re-runs of unchanged files are cheap. Per-book errors are
+ * captured into the result rather than thrown — one bad file shouldn't sink a whole scan.
  */
 export async function processBook(book: Book, deps: ProcessDeps): Promise<BookResult> {
   const base = {
@@ -271,28 +272,46 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
   );
 
   try {
-    const identity = await fileIdentity(book.introTrackPath);
     const tags = await readTags(book.introTrackPath);
 
-    // Window 1: the head — where well-behaved books announce themselves up front.
-    let chosen = await analyzeWindow(book, deps, identity, {
+    const headTrack = book.tracks[0] ?? book.introTrackPath;
+    const tailTrack = book.tracks[book.tracks.length - 1] ?? book.introTrackPath;
+    if (book.tracks.length > 1) {
+      log?.info(
+        { book: book.name, tracks: book.tracks.length, first: headTrack, last: tailTrack, source: book.source },
+        'pipeline: multi-file book — head from first track, tail from last',
+      );
+      // Soft signal, not a cap: a real book is a handful-to-dozens of tracks. Hundreds
+      // smells like a multi-book parent (a narratorr contract breach) — leave a breadcrumb.
+      if (book.tracks.length > 150) {
+        log?.warn(
+          { book: book.name, tracks: book.tracks.length, source: book.source },
+          'pipeline: unusually many tracks for one book — possible multi-book parent (contract breach?)',
+        );
+      }
+    }
+
+    // Window 1: the head of the first track — where well-behaved books announce themselves.
+    let chosen = await analyzeWindow(book, deps, {
+      track: headTrack,
       offset: deps.offsetSeconds,
       seconds: deps.seconds,
       label: 'head',
     });
 
-    // Window 2 (lazy): the tail. Only sampled when the head is incomplete, and only
-    // when the file is long enough that the tail window doesn't overlap the head.
+    // Window 2 (lazy): the tail of the LAST track. A separate tail file is always new
+    // audio; for a single-file book only sample the tail if it doesn't overlap the head.
     if (deps.tailSampling !== false && !isComplete(chosen)) {
-      const duration = await getAudioDuration(book.introTrackPath);
+      const multiFile = tailTrack !== headTrack;
+      const duration = await getAudioDuration(tailTrack);
       const headEnd = deps.offsetSeconds + deps.seconds;
-      if (duration !== null && duration - deps.seconds > headEnd) {
-        const tailOffset = duration - deps.seconds;
+      if (duration !== null && (multiFile || duration - deps.seconds > headEnd)) {
+        const tailOffset = Math.max(0, duration - deps.seconds);
         log?.info(
-          { book: book.name, duration: Math.round(duration), tailOffset: Math.round(tailOffset), headScore: fieldScore(chosen) },
+          { book: book.name, tailTrack, duration: Math.round(duration), tailOffset: Math.round(tailOffset), headScore: fieldScore(chosen) },
           'pipeline: head incomplete → sampling tail',
         );
-        const tail = await analyzeWindow(book, deps, identity, { offset: tailOffset, seconds: deps.seconds, label: 'tail' });
+        const tail = await analyzeWindow(book, deps, { track: tailTrack, offset: tailOffset, seconds: deps.seconds, label: 'tail' });
         const headScore = fieldScore(chosen);
         const tailScore = fieldScore(tail);
         const tailWins = tailScore > headScore || (tailScore === headScore && tail.attributionPresent && !chosen.attributionPresent);

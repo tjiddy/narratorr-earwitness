@@ -5,7 +5,6 @@ import path from 'node:path';
 import {
   AttributionService,
   AttributionCapacityError,
-  AmbiguousPathError,
   LibraryRootError,
   PathForbiddenError,
   PathNotFoundError,
@@ -70,9 +69,13 @@ describe('AttributionService guard rails', () => {
     await expect(svc.attribute({ path: 'does-not-exist.m4b' })).rejects.toBeInstanceOf(PathNotFoundError);
   });
 
-  it('returns AmbiguousPathError when a folder holds multiple books (→422)', async () => {
+  it('resolves a folder of multiple files as ONE book — no false 422 (contract: one path = one book)', async () => {
+    // The folder holds a.m4b + b.m4b; the OLD discover() path counted these as 2 books
+    // and 422'd. resolveBookAt treats them as one book's tracks. Stub transcribe returns
+    // empty → no speech → attributionPresent:false, but crucially it does NOT throw.
     const svc = new AttributionService(makeDeps({ libraryRoot: root }));
-    await expect(svc.attribute({ path: '.' })).rejects.toBeInstanceOf(AmbiguousPathError);
+    const res = await svc.attribute({ path: '.' });
+    expect(res.detection.attributionPresent).toBe(false);
   });
 
   it('sheds load with AttributionCapacityError when at capacity (→503)', async () => {

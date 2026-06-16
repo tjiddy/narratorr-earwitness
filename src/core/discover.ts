@@ -203,3 +203,69 @@ export async function discover(root: string): Promise<Book[]> {
 
   return books.sort((a, b) => naturalCompare(a.name, b.name));
 }
+
+/**
+ * Resolve EXACTLY ONE book at a path — for the attribution endpoint, where narratorr
+ * always sends a single book's path (contract sign-off §B.6). Unlike discover(), this
+ * NEVER splits: a directory becomes one book containing ALL audio under it. That
+ * absorbs the layouts discover()'s batch rules would over-split into a false
+ * AmbiguousPathError — multiple `.m4b` "parts", titled loose chapters, and `Disc N/`
+ * subfolders. Returns null when there's no audio at/under the path (caller → 404).
+ *
+ * We deliberately do NOT re-derive book boundaries here: narratorr owns layout, so
+ * guessing is both wrong and unnecessary. If narratorr ever breaches the contract and
+ * sends a true multi-book parent, this returns a best-effort book (head from the first
+ * track, tail from the last) rather than erroring — the caller logs the track list.
+ */
+export async function resolveBookAt(root: string): Promise<Book | null> {
+  const resolved = path.resolve(root);
+  const rootReal = await realOrNull(resolved);
+  if (!rootReal) return null;
+
+  const st = await fs.stat(rootReal).catch(() => null);
+  if (!st) return null;
+
+  if (st.isFile()) {
+    return isAudio(rootReal) ? makeBook(rootReal, path.parse(rootReal).name, [rootReal]) : null;
+  }
+
+  // Directory → gather ALL audio underneath as ONE book (no container/skeleton split).
+  const scanRoot = rootReal;
+  const found: string[] = [];
+  const visited = new Set<string>();
+  async function collect(real: string, depth: number): Promise<void> {
+    if (depth > MAX_DEPTH) return;
+    const key = caseFold(real);
+    if (visited.has(key)) return;
+    visited.add(key);
+
+    const entries = await fs.readdir(real, { withFileTypes: true }).catch(() => []);
+    const subdirs: string[] = [];
+    for (const e of entries) {
+      const full = path.join(real, e.name);
+      if (e.isDirectory()) {
+        subdirs.push(full);
+      } else if (e.isFile()) {
+        if (isAudio(e.name)) found.push(full);
+      } else if (e.isSymbolicLink()) {
+        const target = await realOrNull(full);
+        if (!target) continue;
+        const tst = await fs.stat(target).catch(() => null);
+        if (tst?.isDirectory()) {
+          if (isWithin(target, scanRoot)) subdirs.push(target);
+        } else if (tst?.isFile() && isAudio(e.name)) {
+          found.push(full);
+        }
+      }
+    }
+    for (const sub of subdirs) await collect(sub, depth + 1);
+  }
+  await collect(scanRoot, 0);
+
+  if (found.length === 0) return null;
+  // Natural-sort by RELATIVE path so `Disc 1/` precedes `Disc 2/` precedes `Disc 10/`,
+  // and chapter 2 precedes chapter 10 — intro is the first track, the outro the last.
+  found.sort((a, b) => naturalCompare(path.relative(scanRoot, a), path.relative(scanRoot, b)));
+  const reason = found.length > 1 ? `${found.length} tracks under one folder (attribution: single book)` : 'single file';
+  return makeBook(rootReal, path.basename(rootReal), found, reason);
+}

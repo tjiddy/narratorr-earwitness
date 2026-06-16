@@ -107,6 +107,32 @@ describe('processBook — tail sampling', () => {
     expect(res.detected.title).toBeNull();
   });
 
+  it('multi-file book: tail reads the LAST track, not the tail of track 1', async () => {
+    const dir = await fs.mkdtemp(path.join(tmp, 'multi-'));
+    const f1 = path.join(dir, '01.m4b');
+    const f2 = path.join(dir, '02.m4b');
+    await fs.writeFile(f1, 'x');
+    await fs.writeFile(f2, 'x');
+    const book: Book = { name: 'Multi', source: dir, introTrackPath: f1, introTrackReason: 'first', tracks: [f1, f2], isMultifile: true };
+
+    const calls: Array<{ track: string; offset: number }> = [];
+    const provider: TranscribeProvider = {
+      name: 'fake',
+      transcribe: async (track, opts) => {
+        calls.push({ track, offset: opts.offsetSeconds });
+        return track === f2 ? TAIL : HEAD; // credit lives in the LAST track
+      },
+    };
+    mockOllamaByContent();
+
+    const res = await processBook(book, deps({ transcribe: provider }));
+    expect(res.detected.authors).toEqual(['Bryn Weaver']); // resolved from the tail = last track
+    expect(calls.some((c) => c.track === f1)).toBe(true); // head read track 1
+    const tailCall = calls.find((c) => c.track === f2);
+    expect(tailCall).toBeDefined(); // tail read track 2 (NOT the tail of track 1)
+    expect(tailCall!.offset).toBeGreaterThan(100); // near the end (duration 600 - 60 = 540)
+  });
+
   it('skips the tail when the head already resolves a complete attribution', async () => {
     // Head transcript carries the full credit → no tail transcription needed.
     const provider: TranscribeProvider = {

@@ -1,4 +1,4 @@
-import { discover } from '@core/discover.js';
+import { resolveBookAt } from '@core/discover.js';
 import { processBook, type ProcessDeps } from '@core/pipeline.js';
 import { compareIdentity, type Expected } from '@core/compare-llm.js';
 import type { Logger } from '@core/logger.js';
@@ -109,16 +109,22 @@ export class AttributionService {
           : new PathNotFoundError(input.path);
       }
 
-      const books = await discover(resolved.real);
-      if (books.length === 0) {
+      // Resolve the path as EXACTLY ONE book (narratorr owns layout, §B.6). Unlike the
+      // batch discover(), this never splits a multi-file/multi-disc book into N phantom
+      // books — which used to false-422 real chaptered audiobooks.
+      const book = await resolveBookAt(resolved.real);
+      if (!book) {
         log?.warn({ path: input.path }, 'attribution: no audio found at path → 404');
-        throw new PathNotFoundError(input.path); // exists, but no audio
+        throw new PathNotFoundError(input.path); // exists, but no audio anywhere under it
       }
-      if (books.length > 1) {
-        log?.warn({ path: input.path, count: books.length }, 'attribution: ambiguous folder → 422');
-        throw new AmbiguousPathError(books.length);
+      if (book.tracks.length > 1) {
+        // Breadcrumb: on a contract breach (a true multi-book parent) head/tail would
+        // splice two books, so record exactly what we treated as one book.
+        log?.info(
+          { path: input.path, tracks: book.tracks.length, first: book.tracks[0], last: book.tracks.at(-1), source: book.source },
+          'attribution: resolved multi-file book (one book, all tracks)',
+        );
       }
-      const book = books[0]!;
 
       // Stage 1: blind extraction → detection (evidence-guarded fact).
       const result = await processBook(book, { ...this.deps, signal: input.signal, logger: log });

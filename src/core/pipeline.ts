@@ -1,9 +1,9 @@
 import { extractionSchema, type Attribution, type BookResult, type Extraction } from '@shared/schemas.js';
 import type { Book } from './discover.js';
-import { type Cache, fileIdentity, sha, transcriptKey, extractionKey } from './cache.js';
+import { type Cache, type FileIdentity, fileIdentity, sha, transcriptKey, extractionKey } from './cache.js';
 import type { TranscribeProvider } from './transcribe/index.js';
 import { extract, PROMPT_VERSION, SCHEMA_VERSION } from './extract.js';
-import { readTags } from './tags.js';
+import { readTags, getAudioDuration } from './tags.js';
 import { AudioDecodeError } from './audio.js';
 import { compareAttribution, splitPeople } from './compare.js';
 import type { Logger } from './logger.js';
@@ -26,6 +26,9 @@ export interface ProcessDeps {
   signal?: AbortSignal | undefined;
   transcribeTimeoutMs?: number | undefined;
   extractTimeoutMs?: number | undefined;
+  /** Sample the file's TAIL when the head intro doesn't yield a complete attribution
+   *  (Audible & co. put the credit at the end). Default on; set false to disable. */
+  tailSampling?: boolean | undefined;
   /** Optional request-scoped logger. When present, the pipeline narrates every step
    *  — transcript size + excerpt, raw extraction, evidence-guard nulling, final
    *  detection — so "why did it say X?" is answerable from the logs alone. */
@@ -101,11 +104,158 @@ function enforceEvidence(extraction: Extraction, transcript: string): Extraction
   };
 }
 
+/** One analyzed window of a file — transcript + the evidence-guarded detection from it. */
+interface WindowAnalysis {
+  label: 'head' | 'tail';
+  transcript: string;
+  transcriptExcerpt: string;
+  attributionPresent: boolean;
+  detected: Attribution;
+  confidence: number;
+  evidence: { title: string | null; author: string | null; narrator: string | null };
+}
+
+/** How many of the three fields a window actually pinned down — the head-vs-tail tiebreaker. */
+function fieldScore(a: WindowAnalysis): number {
+  return (a.detected.title ? 1 : 0) + (a.detected.authors.length ? 1 : 0) + (a.detected.narrators.length ? 1 : 0);
+}
+
+/** "Good enough to skip the tail": a title AND at least one person, all evidence-backed. */
+function isComplete(a: WindowAnalysis): boolean {
+  return (
+    a.attributionPresent &&
+    a.detected.title !== null &&
+    (a.detected.authors.length > 0 || a.detected.narrators.length > 0)
+  );
+}
+
 /**
- * Run one book through the full pipeline. Transcript and extraction are served
- * from / written to the split file cache, so re-runs of unchanged files are cheap.
- * Per-book errors are captured into the result rather than thrown — one bad file
- * shouldn't sink a whole scan.
+ * Transcribe + extract + evidence-guard ONE window of the file (head or tail). Both
+ * the transcript and the extraction are content-addressed in the cache (the window
+ * offset is part of the transcript key), so head and tail never collide and re-runs
+ * are cheap. This makes no head-vs-tail decision — the caller orchestrates that.
+ */
+async function analyzeWindow(
+  book: Book,
+  deps: ProcessDeps,
+  identity: FileIdentity,
+  win: { offset: number; seconds: number; label: 'head' | 'tail' },
+): Promise<WindowAnalysis> {
+  const log = deps.logger;
+
+  const tKey = transcriptKey({
+    introTrackPath: book.introTrackPath,
+    identity,
+    offset: win.offset,
+    seconds: win.seconds,
+    model: deps.whisperModel,
+    backend: deps.transcribe.name,
+  });
+  let transcript = await deps.cache.get<string>('transcript', tKey);
+  const transcriptCached = transcript !== null;
+  if (transcript === null) {
+    transcript = await deps.transcribe.transcribe(book.introTrackPath, {
+      ffmpegPath: deps.ffmpegPath,
+      offsetSeconds: win.offset,
+      seconds: win.seconds,
+      model: deps.whisperModel,
+      signal: withTimeout(deps.signal, deps.transcribeTimeoutMs),
+    });
+    await deps.cache.set('transcript', tKey, transcript);
+  }
+  const transcriptExcerpt = transcript.slice(0, EXCERPT_CHARS);
+  log?.info(
+    { book: book.name, window: win.label, offset: Math.round(win.offset), cache: transcriptCached ? 'hit' : 'miss', chars: transcript.length, excerpt: transcript.slice(0, 200) },
+    'pipeline: transcribed',
+  );
+  log?.debug({ book: book.name, window: win.label, transcript }, 'pipeline: full transcript');
+
+  const empty: WindowAnalysis = {
+    label: win.label,
+    transcript,
+    transcriptExcerpt,
+    attributionPresent: false,
+    detected: emptyAttr(),
+    confidence: 0,
+    evidence: emptyEvidence(),
+  };
+
+  // No usable speech in this window → empty detection (the caller may try the other window).
+  if (transcript.replace(/\s/g, '').length < MIN_TRANSCRIPT_CHARS) {
+    log?.warn(
+      { book: book.name, window: win.label, chars: transcript.length },
+      'pipeline: no usable speech in window → attributionPresent=false (silence/music, or credit is elsewhere)',
+    );
+    return empty;
+  }
+
+  // Extract (cached). Re-validate cached value against the schema so a stale or corrupt
+  // cache entry is treated as a miss instead of trusted blindly.
+  const eKey = extractionKey({
+    transcriptHash: sha(transcript),
+    model: deps.ollama.model,
+    promptVersion: PROMPT_VERSION,
+    schemaVersion: SCHEMA_VERSION,
+  });
+  const cached = await deps.cache.get<unknown>('extraction', eKey);
+  const cachedValid = cached === null ? null : extractionSchema.safeParse(cached);
+  let extraction = cachedValid && cachedValid.success ? cachedValid.data : null;
+  const extractionCached = extraction !== null;
+  if (extraction === null) {
+    extraction = await extract(transcript, { ...deps.ollama, signal: withTimeout(deps.signal, deps.extractTimeoutMs) });
+    await deps.cache.set('extraction', eKey, extraction);
+  }
+  log?.info(
+    {
+      book: book.name,
+      window: win.label,
+      cache: extractionCached ? 'hit' : 'miss',
+      raw: { title: extraction.title, author: extraction.author, narrator: extraction.narrator },
+      confidence: extraction.confidence,
+      attributionPresent: extraction.attributionPresent,
+    },
+    'pipeline: extracted (raw, pre-evidence-guard)',
+  );
+  log?.debug({ book: book.name, window: win.label, evidence: extraction.evidence }, 'pipeline: extraction evidence spans');
+
+  // Enforce evidence (anti-hallucination) before trusting any detected field.
+  const verified = enforceEvidence(extraction, transcript);
+  const nulled = (['title', 'author', 'narrator'] as const).filter((f) => extraction[f] !== null && verified[f] === null);
+  if (nulled.length > 0) {
+    log?.warn(
+      { book: book.name, window: win.label, nulled, confidence: verified.confidence },
+      'pipeline: evidence guard nulled unsupported field(s) — detected but not found verbatim in the transcript',
+    );
+  }
+
+  const detected = {
+    title: verified.title,
+    authors: splitPeople(verified.author),
+    narrators: splitPeople(verified.narrator),
+  };
+  log?.info(
+    { book: book.name, window: win.label, attributionPresent: verified.attributionPresent, detected, confidence: verified.confidence },
+    'pipeline: window analysis complete',
+  );
+
+  return {
+    label: win.label,
+    transcript,
+    transcriptExcerpt,
+    attributionPresent: verified.attributionPresent,
+    detected,
+    confidence: verified.confidence,
+    evidence: verified.evidence,
+  };
+}
+
+/**
+ * Run one book through the full pipeline. Samples the HEAD (publisher intro) first;
+ * if that doesn't yield a complete attribution, samples the TAIL (Audible & co. put
+ * the credit at the end) and keeps whichever window heard more. Only books the head
+ * can't resolve pay for a second transcription. Transcript + extraction are cached,
+ * so re-runs of unchanged files are cheap. Per-book errors are captured into the
+ * result rather than thrown — one bad file shouldn't sink a whole scan.
  */
 export async function processBook(book: Book, deps: ProcessDeps): Promise<BookResult> {
   const base = {
@@ -122,125 +272,61 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
 
   try {
     const identity = await fileIdentity(book.introTrackPath);
+    const tags = await readTags(book.introTrackPath);
 
-    // 1. Transcribe (cached)
-    const tKey = transcriptKey({
-      introTrackPath: book.introTrackPath,
-      identity,
+    // Window 1: the head — where well-behaved books announce themselves up front.
+    let chosen = await analyzeWindow(book, deps, identity, {
       offset: deps.offsetSeconds,
       seconds: deps.seconds,
-      model: deps.whisperModel,
-      backend: deps.transcribe.name,
+      label: 'head',
     });
-    let transcript = await deps.cache.get<string>('transcript', tKey);
-    const transcriptCached = transcript !== null;
-    if (transcript === null) {
-      transcript = await deps.transcribe.transcribe(book.introTrackPath, {
-        ffmpegPath: deps.ffmpegPath,
-        offsetSeconds: deps.offsetSeconds,
-        seconds: deps.seconds,
-        model: deps.whisperModel,
-        signal: withTimeout(deps.signal, deps.transcribeTimeoutMs),
-      });
-      await deps.cache.set('transcript', tKey, transcript);
-    }
-    log?.info(
-      { book: book.name, cache: transcriptCached ? 'hit' : 'miss', chars: transcript.length, excerpt: transcript.slice(0, 200) },
-      'pipeline: transcribed',
-    );
-    log?.debug({ book: book.name, transcript }, 'pipeline: full transcript');
 
-    const tags = await readTags(book.introTrackPath);
-    const transcriptExcerpt = transcript.slice(0, EXCERPT_CHARS);
-
-    // No usable speech → book-level "couldn't determine", no field flags.
-    if (transcript.replace(/\s/g, '').length < MIN_TRANSCRIPT_CHARS) {
-      log?.warn(
-        { book: book.name, chars: transcript.length },
-        'pipeline: no usable speech in window → attributionPresent=false (likely silence/music, or credit is elsewhere in the file)',
-      );
-      return {
-        ...base,
-        attributionPresent: false,
-        detected: emptyAttr(),
-        confidence: 0,
-        evidence: emptyEvidence(),
-        tags,
-        flags: [],
-        transcriptExcerpt,
-        error: null,
-        errorKind: null,
-      };
+    // Window 2 (lazy): the tail. Only sampled when the head is incomplete, and only
+    // when the file is long enough that the tail window doesn't overlap the head.
+    if (deps.tailSampling !== false && !isComplete(chosen)) {
+      const duration = await getAudioDuration(book.introTrackPath);
+      const headEnd = deps.offsetSeconds + deps.seconds;
+      if (duration !== null && duration - deps.seconds > headEnd) {
+        const tailOffset = duration - deps.seconds;
+        log?.info(
+          { book: book.name, duration: Math.round(duration), tailOffset: Math.round(tailOffset), headScore: fieldScore(chosen) },
+          'pipeline: head incomplete → sampling tail',
+        );
+        const tail = await analyzeWindow(book, deps, identity, { offset: tailOffset, seconds: deps.seconds, label: 'tail' });
+        const headScore = fieldScore(chosen);
+        const tailScore = fieldScore(tail);
+        const tailWins = tailScore > headScore || (tailScore === headScore && tail.attributionPresent && !chosen.attributionPresent);
+        log?.info(
+          { book: book.name, headScore, tailScore, winner: tailWins ? 'tail' : 'head' },
+          'pipeline: window selection',
+        );
+        if (tailWins) chosen = tail;
+      } else {
+        log?.info(
+          { book: book.name, duration: duration === null ? 'unknown' : Math.round(duration) },
+          'pipeline: tail sampling skipped (file too short, or duration unknown)',
+        );
+      }
     }
 
-    // 2. Extract (cached). Re-validate cached value against the schema so a stale
-    // or corrupt cache entry is treated as a miss instead of trusted blindly.
-    const eKey = extractionKey({
-      transcriptHash: sha(transcript),
-      model: deps.ollama.model,
-      promptVersion: PROMPT_VERSION,
-      schemaVersion: SCHEMA_VERSION,
-    });
-    const cached = await deps.cache.get<unknown>('extraction', eKey);
-    const cachedValid = cached === null ? null : extractionSchema.safeParse(cached);
-    let extraction = cachedValid && cachedValid.success ? cachedValid.data : null;
-    const extractionCached = extraction !== null;
-    if (extraction === null) {
-      extraction = await extract(transcript, {
-        ...deps.ollama,
-        signal: withTimeout(deps.signal, deps.extractTimeoutMs),
-      });
-      await deps.cache.set('extraction', eKey, extraction);
-    }
-    log?.info(
-      {
-        book: book.name,
-        cache: extractionCached ? 'hit' : 'miss',
-        raw: { title: extraction.title, author: extraction.author, narrator: extraction.narrator },
-        confidence: extraction.confidence,
-        attributionPresent: extraction.attributionPresent,
-      },
-      'pipeline: extracted (raw, pre-evidence-guard)',
-    );
-    log?.debug({ book: book.name, evidence: extraction.evidence }, 'pipeline: extraction evidence spans');
-
-    // 3. Enforce evidence (anti-hallucination) before trusting any detected field.
-    const verified = enforceEvidence(extraction, transcript);
-
-    const nulledByGuard = (['title', 'author', 'narrator'] as const).filter(
-      (f) => extraction[f] !== null && verified[f] === null,
-    );
-    if (nulledByGuard.length > 0) {
-      log?.warn(
-        { book: book.name, nulled: nulledByGuard, confidence: verified.confidence },
-        'pipeline: evidence guard nulled unsupported field(s) — detected but not found verbatim in the transcript',
-      );
-    }
-
-    const detected = {
-      title: verified.title,
-      authors: splitPeople(verified.author),
-      narrators: splitPeople(verified.narrator),
-    };
-
-    const flags = verified.attributionPresent
-      ? compareAttribution(detected, tags, verified.confidence)
+    const flags = chosen.attributionPresent
+      ? compareAttribution(chosen.detected, tags, chosen.confidence)
       : [];
 
     log?.info(
-      { book: book.name, attributionPresent: verified.attributionPresent, detected, confidence: verified.confidence },
+      { book: book.name, window: chosen.label, attributionPresent: chosen.attributionPresent, detected: chosen.detected, confidence: chosen.confidence },
       'pipeline: detection complete',
     );
 
     return {
       ...base,
-      attributionPresent: verified.attributionPresent,
-      detected,
-      confidence: verified.confidence,
-      evidence: verified.evidence,
+      attributionPresent: chosen.attributionPresent,
+      detected: chosen.detected,
+      confidence: chosen.confidence,
+      evidence: chosen.evidence,
       tags,
       flags,
-      transcriptExcerpt,
+      transcriptExcerpt: chosen.transcriptExcerpt,
       error: null,
       errorKind: null,
     };

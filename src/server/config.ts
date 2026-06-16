@@ -85,6 +85,11 @@ const envSchema = z.object({
   // Process-wide cap on active+queued scans (backpressure). Excess → 503.
   MAX_ACTIVE_SCANS: intFromString('4').pipe(z.number().int().min(1).max(64)),
 
+  // Tail-sampling: when the head intro window yields no complete attribution, also
+  // transcribe the END of the file (Audible & co. put the credit there). Default on;
+  // set false/0/no/off to disable (head-only, cheaper).
+  TAIL_SAMPLING: z.string().optional(),
+
   FFMPEG_PATH: z.string().optional(),
   CACHE_DIR: z.string().default('./.earwitness/cache').transform((v) => resolveFromRoot(v || './.earwitness/cache')),
   REPORTS_DIR: z.string().default('./.earwitness/reports').transform((v) => resolveFromRoot(v || './.earwitness/reports')),
@@ -134,6 +139,8 @@ export const config = {
   transcribeTimeoutMs: env.TRANSCRIBE_TIMEOUT_MS,
   extractTimeoutMs: env.EXTRACT_TIMEOUT_MS,
   maxActiveScans: env.MAX_ACTIVE_SCANS,
+  // Default on; only an explicit false/0/no/off disables it.
+  tailSampling: !/^(false|0|no|off)$/i.test((env.TAIL_SAMPLING ?? '').trim()),
   ffmpegPath: env.FFMPEG_PATH ?? null,
   cacheDir: env.CACHE_DIR,
   reportsDir: env.REPORTS_DIR,

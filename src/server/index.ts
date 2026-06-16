@@ -38,6 +38,7 @@ async function main(): Promise<void> {
     ollama: config.ollama,
     transcribeTimeoutMs: config.transcribeTimeoutMs,
     extractTimeoutMs: config.extractTimeoutMs,
+    tailSampling: config.tailSampling,
   };
 
   const scans = new ScanJobService({

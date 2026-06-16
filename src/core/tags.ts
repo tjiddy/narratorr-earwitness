@@ -29,6 +29,20 @@ export async function readTags(track: string): Promise<Attribution> {
   }
 }
 
+/**
+ * Total runtime of the file in seconds (from the container header), or null if it
+ * can't be determined. Used to locate the tail window for tail-sampling — Audible &
+ * co. frequently put the spoken credit at the END, past the head intro window.
+ */
+export async function getAudioDuration(track: string): Promise<number | null> {
+  try {
+    const { format } = await parseFile(track, { duration: true });
+    return typeof format.duration === 'number' && format.duration > 0 ? format.duration : null;
+  } catch {
+    return null;
+  }
+}
+
 function dedupe(values: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];

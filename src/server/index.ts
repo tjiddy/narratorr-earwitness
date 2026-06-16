@@ -60,11 +60,13 @@ async function main(): Promise<void> {
   app.log.info(`cache=${config.cacheDir} reports=${config.reportsDir}`);
 
   // Print the key on EVERY boot so it's always grep-able straight from the logs.
-  // /api/* requires it from the network; loopback (local UI / curl) is trusted.
+  // Use warn, not info — the prod logger runs at level 'warn' (app.ts), so an info
+  // line would be silently dropped in the container. /api/* requires it from the
+  // network; loopback (local UI / curl) is trusted.
   if (apiKey.source === 'generated') {
     app.log.warn(`No API key found — generated one and saved it to ${apiKey.path}`);
   }
-  app.log.info(`API key: ${apiKey.key}  (send as X-Api-Key to narratorr; persisted at ${apiKey.path})`);
+  app.log.warn(`API key: ${apiKey.key}  (send as X-Api-Key to narratorr; persisted at ${apiKey.path})`);
 
   // We no longer take the key from env — warn if a stale EARWITNESS_API_KEY lingers so
   // an operator who expects it honored isn't silently confused.

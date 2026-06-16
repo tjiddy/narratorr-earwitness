@@ -51,11 +51,18 @@ export class LibraryRootError extends Error {
     this.name = 'LibraryRootError';
   }
 }
-/** Processing failed (transcribe/extract error, timeout). Route → 503 + Retry-After. */
+/** TRANSIENT processing failure (timeout / dependency hiccup). Route → 503 + Retry-After. */
 export class ProcessingError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ProcessingError';
+  }
+}
+/** PERMANENT per-file failure — the audio can't be decoded. Route → 422 (don't retry). */
+export class UnprocessableContentError extends Error {
+  constructor(message: string) {
+    super(`unprocessable audio: ${message}`);
+    this.name = 'UnprocessableContentError';
   }
 }
 
@@ -96,7 +103,12 @@ export class AttributionService {
 
       // Stage 1: blind extraction → detection (evidence-guarded fact).
       const result = await processBook(book, { ...this.deps, signal: input.signal });
-      if (result.error !== null) throw new ProcessingError(result.error);
+      if (result.error !== null) {
+        // Permanent (undecodable audio) → 422; transient (timeout/dependency) → 503.
+        throw result.errorKind === 'unprocessable'
+          ? new UnprocessableContentError(result.error)
+          : new ProcessingError(result.error);
+      }
 
       const detection: Detection = {
         attributionPresent: result.attributionPresent,

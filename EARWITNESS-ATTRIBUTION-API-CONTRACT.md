@@ -5,6 +5,7 @@
 **Status:** 🔒 **LOCKED.** earwitness proposed (`EARWITNESS-RESOLVE-API-PROPOSAL.md`, 2026-06-16) → narratorr signed off with one change + six answers (`narratorr:NARRATORR-EARWITNESS-CONTRACT-SIGNOFF.md`, 2026-06-16) → earwitness accepted the change (this doc). Build against this.
 **Endpoint:** `POST /api/v1/attribution`
 **Supersedes:** `EARWITNESS-RESOLVE-API-PROPOSAL.md`, `NARRATORR-INTEGRATION.md`.
+**Amendment (post-sign-off, 2026-06-16 → v0.2.1):** error codes split by retry semantics — `503` is transient-only; permanent per-file failures are `422`. See changelog #5 and §2.
 
 ---
 
@@ -14,6 +15,7 @@
 2. **Multi-value fields gain a set breakdown** (`matched` / `missingExpected` / `unexpectedDetected`) on `authors`/`narrators`, alongside the rollup `status`. Lets narratorr tell "subset, all consistent" (no warning) from "contradiction" (warning) on multi-cast books.
 3. **`confidence` is returned raw; no hidden threshold.** The evidence-guard stays (correctness — unsupported fields are nulled). A confidence *floor* below which a verdict is ignored is narratorr policy, so earwitness never folds low-confidence into `unknown` behind the scenes.
 4. **All six §10 open questions resolved** (§10 below).
+5. **Error codes split by retry semantics (amendment → v0.2.1).** A deterministic per-book failure (corrupt/undecodable audio) no longer returns `503`. `503` is now **transient-only** ("retry me"); permanent per-file failures return **`422`** ("don't retry"), alongside the ambiguous-folder case. This restores the invariant `200` ⟺ "I processed the audio," and lets the client decide retry on the **status code alone**. (The original overloaded `503` forced narratorr to guess transient-vs-permanent and bake in a workaround.)
 
 ---
 
@@ -132,10 +134,12 @@ Rollup mapping for a multi-value field: all expected matched & nothing unexpecte
 | `401` | Missing/invalid API key. |
 | `403` | `path` resolves outside the configured library root (traversal/escape). |
 | `404` | No audio file found at `path`. |
-| `422` | `path` is a folder with **multiple distinct books** (ambiguous — send one book's path). |
-| `503` | Saturated (backpressure); a required dependency (Whisper/Ollama) is down; the library mount is unavailable; **or** a per-book processing failure (unreadable audio, transcribe/extract error or timeout). Includes `Retry-After`. |
+| `422` | **Permanent — do not retry.** Either the audio is **undecodable/unprocessable** (corrupt, truncated, unsupported, or no audio in the intro window) **or** `path` is a folder with **multiple distinct books** (ambiguous). The two are told apart by the `error` message (`"unprocessable audio: …"` vs `"path is a folder with N distinct books …"`) — for the human reading the event, *not* for branching. |
+| `503` | **Transient — retry with backoff.** Saturated (backpressure), a required dependency (Whisper/Ollama) down, the library mount unavailable, or a transcribe/extract **timeout**. Includes `Retry-After`. |
 
 Errors use earwitness's **`{ error: string }`** envelope — a single human-readable message; the HTTP **status** is the machine-actionable code. (This is flat across every earwitness route, and differs from narratorr's own `{ error: { code, message } }` convention — branch on the status, not the body.)
+
+**Retry semantics (the axis the batch worker cares about):** `200` → use it (incl. `attributionPresent:false` = "processed, no credit"). `503` → transient, retry with backoff. `422` → permanent, surrender this file and surface the message. The client branches on the **status code alone**, never on the error body.
 
 ---
 
@@ -183,6 +187,9 @@ Free text for a human's eyes (UI tooltip, audit log). **Non-authoritative; consu
 
 ### 5.5 Facts vs. policy
 earwitness will **not** emit conclusions like "correct book, wrong edition" — that's an unprovable inference and it's *policy*, which is narratorr's. earwitness hands the matrix; narratorr maps it (e.g. `title✓ author✓ narrator✗` → its "wrong edition / soft warning"; `title✗ author✗` → "wrong book / hard flag"). narratorr may version/retune its codes without an earwitness release.
+
+### 5.6 "Couldn't process" ≠ "processed, no credit"
+A `200` with `attributionPresent:false` means earwitness *did* process the audio and found no citable credit — fall back to folder parsing, and on the on-demand path tell the user "no intro credit, tag it manually." A **corrupt/undecodable file** is a *different* thing: earwitness never got to listen, so it returns **`422`** (permanent), and the user action is "re-rip the file." These drive the same *batch* fallback but different *human* actions on the 1.0 primary (import) path, so they stay distinct: folding "couldn't decode" into `attributionPresent:false` would erase that information exactly where it matters. Keeping `200` ⟺ "I processed the audio" is what preserves it.
 
 ---
 
@@ -293,7 +300,7 @@ All assume `expected` was sent. `detection` abbreviated.
 ---
 
 ## Build status
-- **earwitness — ✅ implemented (2026-06-16).** `POST /api/v1/attribution` route, the second (comparison) LLM stage (`src/core/compare-llm.ts`, identity match + deterministic set arithmetic/rollup, temp 0, cached), `EARWITNESS_LIBRARY_ROOT` + path-containment guard (`resolveWithinRoot`), in-flight cap → `503` + `Retry-After`, `X-Api-Key` accepted. Covered by tests. *Pending:* the small-model default flip (gated on the benchmark).
-- **narratorr — pending.** The earwitness connector (toggle + URL + key + test) and the on-demand server-side call. Batch worker deferred post-1.0.
+- **earwitness — ✅ implemented (2026-06-16; error-code retry-split v0.2.1).** `POST /api/v1/attribution` route, the second (comparison) LLM stage (`src/core/compare-llm.ts`, identity match + deterministic set arithmetic/rollup, temp 0, cached), `EARWITNESS_LIBRARY_ROOT` + path-containment guard (`resolveWithinRoot`), in-flight cap → `503` + `Retry-After`, `X-Api-Key` accepted, and the transient-`503` / permanent-`422` split (ffmpeg-decode failure → `422`, timeout/dependency → `503`, ambiguous middle → transient default). Covered by tests. *Pending:* the small-model default flip (gated on the benchmark).
+- **narratorr — pending.** The earwitness connector (toggle + URL + key + test) and the on-demand server-side call; `#1527` branches `200`-use / `503`-bounded-retry / `422`-surrender, `#1528` distinguishes "couldn't process — re-rip" (`422`) from transient (`503`) in the error event. Batch worker deferred post-1.0.
 
 *Reflects earwitness's implementation as of 2026-06-16 (`src/server/routes/attribution.ts`, `src/server/services/attribution.service.ts`, `src/core/compare-llm.ts`, `src/server/paths.ts`, `src/server/config.ts`).*

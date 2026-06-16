@@ -4,6 +4,7 @@ import { type Cache, fileIdentity, sha, transcriptKey, extractionKey } from './c
 import type { TranscribeProvider } from './transcribe/index.js';
 import { extract, PROMPT_VERSION, SCHEMA_VERSION } from './extract.js';
 import { readTags } from './tags.js';
+import { AudioDecodeError } from './audio.js';
 import { compareAttribution, splitPeople } from './compare.js';
 
 const MIN_TRANSCRIPT_CHARS = 15;
@@ -148,6 +149,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
         flags: [],
         transcriptExcerpt,
         error: null,
+        errorKind: null,
       };
     }
 
@@ -193,6 +195,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       flags,
       transcriptExcerpt,
       error: null,
+      errorKind: null,
     };
   } catch (err) {
     // Job cancellation: bubble up so the scan ends as 'cancelled', not as a failed
@@ -203,6 +206,9 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       : err instanceof Error
         ? err.message
         : String(err);
+    // Undecodable audio is permanent for this file (don't retry); everything else —
+    // timeouts, dependency hiccups, the fuzzy middle — defaults to transient (retry-safe).
+    const errorKind = err instanceof AudioDecodeError ? 'unprocessable' : 'transient';
     return {
       ...base,
       attributionPresent: false,
@@ -213,6 +219,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       flags: [],
       transcriptExcerpt: null,
       error: message,
+      errorKind,
     };
   }
 }

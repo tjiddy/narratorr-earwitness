@@ -9,8 +9,11 @@ import {
   LibraryRootError,
   PathForbiddenError,
   PathNotFoundError,
+  ProcessingError,
+  UnprocessableContentError,
   type AttributionServiceDeps,
 } from './attribution.service.js';
+import { AudioDecodeError } from '@core/audio.js';
 import type { Cache } from '@core/cache.js';
 
 // These tests exercise the guard rails BEFORE processBook (path safety, ambiguity,
@@ -80,5 +83,37 @@ describe('AttributionService guard rails', () => {
   it('returns LibraryRootError when the library root is not mounted (→503)', async () => {
     const svc = new AttributionService(makeDeps({ libraryRoot: path.join(root, 'not-mounted') }));
     await expect(svc.attribute({ path: 'a.m4b' })).rejects.toBeInstanceOf(LibraryRootError);
+  });
+
+  // These reach processBook with a single-file path; the stubbed transcribe decides
+  // whether the failure is permanent (undecodable) or transient.
+  it('maps an undecodable file to UnprocessableContentError (→422, permanent)', async () => {
+    const svc = new AttributionService(
+      makeDeps({
+        libraryRoot: root,
+        transcribe: {
+          name: 'stub',
+          transcribe: async () => {
+            throw new AudioDecodeError('ffmpeg failed (1): moov atom not found');
+          },
+        },
+      }),
+    );
+    await expect(svc.attribute({ path: 'a.m4b' })).rejects.toBeInstanceOf(UnprocessableContentError);
+  });
+
+  it('maps a transient transcribe failure to ProcessingError (→503)', async () => {
+    const svc = new AttributionService(
+      makeDeps({
+        libraryRoot: root,
+        transcribe: {
+          name: 'stub',
+          transcribe: async () => {
+            throw new Error('connect ECONNREFUSED 127.0.0.1:11434');
+          },
+        },
+      }),
+    );
+    await expect(svc.attribute({ path: 'a.m4b' })).rejects.toBeInstanceOf(ProcessingError);
   });
 });

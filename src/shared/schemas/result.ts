@@ -43,5 +43,9 @@ export const bookResultSchema = z.object({
   flags: z.array(flagSchema),
   transcriptExcerpt: z.string().nullable(),
   error: z.string().nullable(),
+  // When `error` is set, whether it's permanent for this file (undecodable audio →
+  // don't retry) or transient (timeout / dependency → retry). null when no error.
+  // `.default(null)` keeps older reports (written before this field) valid on re-read.
+  errorKind: z.enum(['unprocessable', 'transient']).nullable().default(null),
 });
 export type BookResult = z.infer<typeof bookResultSchema>;

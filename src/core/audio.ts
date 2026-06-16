@@ -7,6 +7,19 @@ import { spawn } from 'node:child_process';
 
 export const SAMPLE_RATE = 16_000;
 
+/**
+ * ffmpeg could not decode the input — a corrupt / truncated / unsupported file, or
+ * no audio in the requested window. This is a PERMANENT condition for the file:
+ * retrying won't help, so callers map it to a non-retryable status (422), distinct
+ * from a transient transcribe failure (dependency down / timeout → 503).
+ */
+export class AudioDecodeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AudioDecodeError';
+  }
+}
+
 export interface CutOptions {
   ffmpegPath: string;
   offsetSeconds: number;
@@ -43,11 +56,21 @@ function runFfmpeg(ffmpegPath: string, args: string[], track: string, signal?: A
     const err: Buffer[] = [];
     proc.stdout.on('data', (d: Buffer) => out.push(d));
     proc.stderr.on('data', (d: Buffer) => err.push(d));
+    // Spawn failure (e.g. ffmpeg not installed) is NOT a content problem — leave it a
+    // plain Error so it classifies transient, not as an undecodable file.
     proc.on('error', reject);
     proc.on('close', (code) => {
+      // An abort (cancellation / timeout) can surface here as a non-zero/null code;
+      // don't mistake it for a decode failure — reject as an abort so it stays transient.
+      if (signal?.aborted) {
+        const e = new Error('ffmpeg aborted');
+        e.name = 'AbortError';
+        reject(e);
+        return;
+      }
       if (code !== 0) {
         const tail = Buffer.concat(err).toString('utf8').trim().split('\n').slice(-4).join('\n');
-        reject(new Error(`ffmpeg failed (${code}) on ${track}: ${tail}`));
+        reject(new AudioDecodeError(`ffmpeg failed (${code}) on ${track}: ${tail}`));
         return;
       }
       resolve(Buffer.concat(out));
@@ -58,7 +81,7 @@ function runFfmpeg(ffmpegPath: string, args: string[], track: string, signal?: A
 /** First `seconds` of `track` as float32 PCM @16kHz mono, normalized to [-1, 1]. */
 export async function decodePcmF32(track: string, opts: CutOptions): Promise<Float32Array> {
   const buf = await runFfmpeg(opts.ffmpegPath, buildArgs(track, opts, 's16le'), track, opts.signal);
-  if (buf.length === 0) throw new Error(`ffmpeg produced no audio for ${track}`);
+  if (buf.length === 0) throw new AudioDecodeError(`ffmpeg produced no audio for ${track}`);
   const i16 = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2));
   const f32 = new Float32Array(i16.length);
   for (let i = 0; i < i16.length; i++) f32[i] = i16[i]! / 32768;
@@ -68,6 +91,6 @@ export async function decodePcmF32(track: string, opts: CutOptions): Promise<Flo
 /** First `seconds` of `track` as a 16kHz mono WAV buffer (for HTTP upload). */
 export async function cutWav(track: string, opts: CutOptions): Promise<Buffer> {
   const buf = await runFfmpeg(opts.ffmpegPath, buildArgs(track, opts, 'wav'), track, opts.signal);
-  if (buf.length === 0) throw new Error(`ffmpeg produced no audio for ${track}`);
+  if (buf.length === 0) throw new AudioDecodeError(`ffmpeg produced no audio for ${track}`);
   return buf;
 }

@@ -8,6 +8,7 @@ import {
   PathForbiddenError,
   PathNotFoundError,
   ProcessingError,
+  UnprocessableContentError,
 } from '../services/attribution.service.js';
 import type { AttributionService } from '../services/attribution.service.js';
 
@@ -51,12 +52,15 @@ export function registerAttributionRoutes(app: FastifyInstance, attribution: Att
           ...(comparison ? { comparison } : {}),
         };
       } catch (err) {
+        // Transient (retry me) → 503 + Retry-After.
         if (err instanceof AttributionCapacityError) return retryable(err.message);
         if (err instanceof LibraryRootError) return retryable(err.message);
         if (err instanceof ProcessingError) return retryable(err.message);
+        // Permanent (don't retry) → 4xx, no Retry-After.
         if (err instanceof PathForbiddenError) return reply.code(403).send({ error: err.message });
         if (err instanceof PathNotFoundError) return reply.code(404).send({ error: err.message });
         if (err instanceof AmbiguousPathError) return reply.code(422).send({ error: err.message });
+        if (err instanceof UnprocessableContentError) return reply.code(422).send({ error: err.message });
         throw err; // unknown → 500 via the app error handler
       }
     },

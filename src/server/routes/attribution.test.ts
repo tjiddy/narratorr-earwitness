@@ -7,6 +7,7 @@ import {
   PathForbiddenError,
   PathNotFoundError,
   ProcessingError,
+  UnprocessableContentError,
 } from '../services/attribution.service.js';
 import type { AttributionService, AttributeResult } from '../services/attribution.service.js';
 
@@ -84,11 +85,12 @@ describe('POST /api/v1/attribution', () => {
     await app.close();
   });
 
-  it('maps service errors to status codes', async () => {
+  it('maps permanent errors to 4xx with no Retry-After (don\'t retry)', async () => {
     const cases: Array<[Error, number]> = [
       [new PathForbiddenError('p'), 403],
       [new PathNotFoundError('p'), 404],
-      [new AmbiguousPathError(2), 422],
+      [new AmbiguousPathError(2), 422], // ambiguous folder
+      [new UnprocessableContentError('ffmpeg failed (1)'), 422], // undecodable audio
     ];
     for (const [err, code] of cases) {
       const app = await appWith(async () => {
@@ -97,11 +99,28 @@ describe('POST /api/v1/attribution', () => {
       const res = await app.inject(post({ path: 'x' }));
       expect(res.statusCode).toBe(code);
       expect(res.json()).toHaveProperty('error');
+      expect(res.headers['retry-after']).toBeUndefined();
       await app.close();
     }
   });
 
-  it('503s with Retry-After on capacity and processing failures', async () => {
+  it('distinguishes the two 422 messages (undecodable vs ambiguous folder)', async () => {
+    const undecodable = await appWith(async () => {
+      throw new UnprocessableContentError('ffmpeg failed (1)');
+    });
+    const ru = await undecodable.inject(post({ path: 'x' }));
+    expect(ru.json().error).toMatch(/unprocessable audio/i);
+    await undecodable.close();
+
+    const ambiguous = await appWith(async () => {
+      throw new AmbiguousPathError(2);
+    });
+    const ra = await ambiguous.inject(post({ path: 'x' }));
+    expect(ra.json().error).toMatch(/folder with 2 distinct books/i);
+    await ambiguous.close();
+  });
+
+  it('503s with Retry-After on transient failures (retry me)', async () => {
     for (const err of [new AttributionCapacityError(4), new ProcessingError('ollama down')]) {
       const app = await appWith(async () => {
         throw err;

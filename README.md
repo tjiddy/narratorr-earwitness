@@ -67,8 +67,8 @@ All config is environment variables (`.env` for dev, real env in Docker). See
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | `localhost:11434` / `qwen2.5:7b-instruct` | Extraction LLM |
 | `WHISPER_BACKEND` | `openai-compat` | `openai-compat` / `whispercpp` (HTTP) or `transformersjs` (in-process CPU) |
 | `WHISPER_HOST` / `WHISPER_MODEL` | `localhost:8000` / `large-v3-turbo` | Transcription service |
-| `EARWITNESS_API_KEY` | _(unset)_ | When set, `/api/*` requires `Authorization: Bearer <key>` |
-| `BIND_HOST` | `0.0.0.0` | Bind address (a non-loopback bind with no key logs a warning) |
+| `EARWITNESS_API_KEY_FILE` | `<cache>/../api-key` | Where earwitness persists its **self-owned** key (minted on first boot, printed once). Override the location, not the source — the key isn't read from env. `/api/*` requires it from the network (`Bearer` or `X-Api-Key`); loopback is trusted |
+| `BIND_HOST` | `0.0.0.0` | Bind address |
 | `MAX_CONCURRENT_BOOKS` / `MAX_CONCURRENT_TRANSCRIBES` | `2` / `1` | Concurrency caps |
 
 ## Docker
@@ -77,8 +77,8 @@ A single image (Node + ffmpeg) builds the React UI and Fastify API and serves bo
 A sample GPU-less compose stack brings up the app + Ollama with Whisper running in-process:
 
 ```bash
-LIBRARY_PATH=/srv/audiobooks EARWITNESS_API_KEY=$(openssl rand -hex 24) docker compose up -d
-# → http://<host>:3000
+LIBRARY_PATH=/srv/audiobooks docker compose up -d
+# → http://<host>:3000  (earwitness mints its key to /data/api-key and logs it once)
 ```
 
 Full details (app-only vs full-stack modes, GPU, volumes, the name-quality tradeoff of CPU
@@ -99,7 +99,7 @@ the job succeeds. Requires repo secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHU
 
 ## API
 
-All under `/api` (Bearer-gated when `EARWITNESS_API_KEY` is set):
+All under `/api` (gated for network callers by the self-owned API key; loopback is trusted):
 
 | Endpoint | Purpose |
 |---|---|

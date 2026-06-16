@@ -31,9 +31,11 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default('http://localhost:5173').transform((v) => v || 'http://localhost:5173'),
 
   // Network exposure controls. BIND_HOST defaults to 0.0.0.0 so Docker/LAN keep
-  // working; EARWITNESS_API_KEY (when set) gates /api/*. See server/index.ts.
+  // working. earwitness OWNS its API key — generated + persisted on first boot
+  // (see server/api-key.ts), NOT provided via env. EARWITNESS_API_KEY_FILE only
+  // overrides WHERE that key is stored (defaults to a sibling of the cache dir).
   BIND_HOST: z.string().default('0.0.0.0').transform((v) => v || '0.0.0.0'),
-  EARWITNESS_API_KEY: z.string().optional(),
+  EARWITNESS_API_KEY_FILE: z.string().optional(),
 
   BROWSE_ROOTS: z
     .string()
@@ -89,15 +91,18 @@ const env = parsed.data;
 const mode: 'standalone' | 'narratorr' =
   env.NARRATORR_URL && env.NARRATORR_API_KEY ? 'narratorr' : 'standalone';
 
-// Compose substitutes an unset `${VAR}` to an EMPTY STRING (not "absent"), so treat
-// empty/whitespace as "no key" — otherwise a blank EARWITNESS_API_KEY silently locks
-// /api behind a bearer of empty string that nothing ever sends.
+// Trim a key (the key file's contents) to null when blank/whitespace, so an empty
+// key file reads as "no key yet" and triggers regeneration rather than locking /api
+// behind a bearer of empty string that nothing ever sends.
 export const normalizeApiKey = (v: string | undefined): string | null => v?.trim() || null;
 
 export const config = {
   port: env.PORT,
   bindHost: env.BIND_HOST,
-  apiKey: normalizeApiKey(env.EARWITNESS_API_KEY),
+  // Filled at startup by ensureApiKey() (read-from-file or generate-and-persist).
+  // Null only in unit tests that build the app directly without resolving a key —
+  // registerAuth() then no-ops, matching the pre-key test behavior.
+  apiKey: null as string | null,
   isDev: env.NODE_ENV !== 'production',
   corsOrigin: env.CORS_ORIGIN,
   mode,
@@ -115,6 +120,12 @@ export const config = {
   cacheDir: env.CACHE_DIR,
   reportsDir: env.REPORTS_DIR,
   libraryRoot: env.EARWITNESS_LIBRARY_ROOT,
+  // Where earwitness persists its self-owned API key. Sibling of the cache dir by
+  // default (i.e. /data in compose, ./.earwitness in dev) — deliberately NOT inside
+  // the cache dir, so clearing the cache can't rotate the key out from under callers.
+  apiKeyFile: env.EARWITNESS_API_KEY_FILE
+    ? resolveFromRoot(env.EARWITNESS_API_KEY_FILE)
+    : path.join(path.dirname(env.CACHE_DIR), 'api-key'),
   narratorr:
     mode === 'narratorr'
       ? { url: env.NARRATORR_URL as string, apiKey: env.NARRATORR_API_KEY as string }

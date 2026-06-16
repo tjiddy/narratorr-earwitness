@@ -4,15 +4,17 @@ import { resolveFfmpeg } from '@core/ffmpeg.js';
 import { createTranscribeProvider, withTranscribeLimit } from '@core/transcribe/index.js';
 import type { ProcessDeps } from '@core/pipeline.js';
 import { config } from './config.js';
+import { ensureApiKey } from './api-key.js';
 import { ScanJobService } from './services/scan-job.service.js';
 import { AttributionService } from './services/attribution.service.js';
 import { buildApp } from './app.js';
 
-function isLoopbackHost(host: string): boolean {
-  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
-}
-
 async function main(): Promise<void> {
+  // Resolve our self-owned API key BEFORE building the app so registerAuth() sees it.
+  // config.apiKey is the single source auth reads; fill it in once at startup.
+  const apiKey = await ensureApiKey(config.apiKeyFile);
+  config.apiKey = apiKey.key;
+
   // ffmpeg is required for audio cutting; fall back to bare "ffmpeg" so the server
   // still boots and /api/config reports the problem rather than crashing.
   const ffmpegPath = await resolveFfmpeg(config.ffmpegPath).catch(() => config.ffmpegPath ?? 'ffmpeg');
@@ -57,11 +59,18 @@ async function main(): Promise<void> {
   app.log.info(`earwitness on ${config.bindHost}:${config.port} (mode=${config.mode}, whisper=${config.whisper.backend})`);
   app.log.info(`cache=${config.cacheDir} reports=${config.reportsDir}`);
 
-  // Loud warning (not a hard fail — homelab use) when the API is open on a
-  // non-loopback interface: the filesystem-browsing API is reachable from the LAN.
-  if (!isLoopbackHost(config.bindHost) && config.apiKey === null) {
+  // Print the key on EVERY boot so it's always grep-able straight from the logs.
+  // /api/* requires it from the network; loopback (local UI / curl) is trusted.
+  if (apiKey.source === 'generated') {
+    app.log.warn(`No API key found — generated one and saved it to ${apiKey.path}`);
+  }
+  app.log.info(`API key: ${apiKey.key}  (send as X-Api-Key to narratorr; persisted at ${apiKey.path})`);
+
+  // We no longer take the key from env — warn if a stale EARWITNESS_API_KEY lingers so
+  // an operator who expects it honored isn't silently confused.
+  if (process.env.EARWITNESS_API_KEY?.trim()) {
     app.log.warn(
-      `SECURITY: bound to ${config.bindHost} with NO EARWITNESS_API_KEY set — /api is reachable unauthenticated on the network. Set EARWITNESS_API_KEY or BIND_HOST=127.0.0.1.`,
+      `EARWITNESS_API_KEY env is set but IGNORED — earwitness owns its key (${apiKey.path}). To use a specific key, write it to that file (or set EARWITNESS_API_KEY_FILE).`,
     );
   }
 }

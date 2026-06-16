@@ -57,7 +57,7 @@ narratorr stores the OUTCOME ◄────────────────
 
 ### `POST /api/v1/attribution`
 
-**Auth:** `X-Api-Key: <earwitness key>` (configured in narratorr's earwitness connector; our existing `EARWITNESS_API_KEY`).
+**Auth:** `X-Api-Key: <earwitness key>` (configured in narratorr's earwitness connector). earwitness owns this key — it generates + persists one on first boot; see §7.1 for how to retrieve it.
 
 **Request:**
 
@@ -203,6 +203,8 @@ narratorr's server-side job worker: enqueue one task per book, call `POST /api/v
 
 ### 7.1 Auth
 narratorr → earwitness: `X-Api-Key`, the earwitness key configured in narratorr's connector. (earwitness also accepts `Authorization: Bearer <key>` for its own browser UI; narratorr should send `X-Api-Key`.)
+
+**earwitness owns the key — it is not provisioned via env.** On first boot earwitness generates a random key and persists it to `EARWITNESS_API_KEY_FILE` (default `/data/api-key`, alongside the cache dir so a cache wipe can't rotate it), printing it once in the logs. Retrieve it with `docker compose exec earwitness cat /data/api-key` (or grep the boot logs) and paste it into narratorr's connector. To pin a specific key, write that file before first boot. Auth is enforced on the **network**; loopback is trusted, so the local UI/curl work without it.
 
 ### 7.2 Paths & mounts
 narratorr sends a path **relative to the shared library mount** (both containers bind the same library at the same path, e.g. `/audiobooks`). earwitness joins it to a configured root (`EARWITNESS_LIBRARY_ROOT`, default `/audiobooks`) and **rejects any escape** — realpath + containment, symlink-escape rejection, absolute paths refused unless explicitly enabled (reusing the `discover.ts` guard). Both sides will confirm the mount path matches in the actual compose before launch.

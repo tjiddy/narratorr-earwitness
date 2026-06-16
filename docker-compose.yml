@@ -3,12 +3,14 @@
 # serves both the API and the UI on :3000.
 #
 # Quick start:
-#   LIBRARY_PATH=/srv/audiobooks EARWITNESS_API_KEY=$(openssl rand -hex 24) docker compose up -d
+#   LIBRARY_PATH=/srv/audiobooks docker compose up -d
 #   open http://<host>:3000
 #
 # Required:  LIBRARY_PATH  — host folder of audiobooks (mounted read-only).
-# Strongly recommended on a LAN:  EARWITNESS_API_KEY  — otherwise /api is open
-#   (the app logs a loud warning at boot). See DOCKER.md.
+# API key:  earwitness generates + persists its own key to /data/api-key on first boot
+#   and prints it once. Grab it with `docker compose logs earwitness | grep "API key"`
+#   or `docker compose exec earwitness cat /data/api-key`, then hand it to narratorr.
+#   /api requires it from the network; loopback is trusted. See DOCKER.md.
 
 services:
   earwitness:
@@ -18,7 +20,9 @@ services:
       - "3000:3000"
     environment:
       BIND_HOST: 0.0.0.0
-      EARWITNESS_API_KEY: ${EARWITNESS_API_KEY:-}
+      # No API key env — earwitness mints + persists its own to /data/api-key (on the
+      # earwitness-data volume, so it survives restarts). To bring your own, write that
+      # file or mount it as a Docker secret.
       BROWSE_ROOTS: /library
       # Root that POST /api/v1/attribution resolves narratorr's library-relative paths
       # against — point it at the same library mount. (narratorr sends RELATIVE paths,

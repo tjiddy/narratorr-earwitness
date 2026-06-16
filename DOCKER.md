@@ -16,9 +16,8 @@ Spins up the app + Ollama. Whisper runs **in-process** (transformers.js CPU), so
 there's no separate STT container.
 
 ```sh
-# LIBRARY_PATH is required; an API key is strongly recommended on a LAN.
+# Only LIBRARY_PATH is required — earwitness mints its own API key.
 export LIBRARY_PATH=/srv/audiobooks
-export EARWITNESS_API_KEY=$(openssl rand -hex 24)
 docker compose up -d
 # → http://<host>:3000
 ```
@@ -26,9 +25,21 @@ docker compose up -d
 First run downloads the Ollama model (~5 GB) before the app starts, and the Whisper
 model on the first scan; both are cached in named volumes, so it's a one-time cost.
 
+**Getting the API key.** earwitness generates + persists its own key to `/data/api-key`
+(on the `earwitness-data` volume) on first boot and prints it once. Grab it with:
+```sh
+docker compose logs earwitness | grep "API key"
+# or, any time:
+docker compose exec earwitness cat /data/api-key
+```
+Hand that to narratorr's connector. `/api/*` requires it from the **network** as
+`Authorization: Bearer <key>` **or** `X-Api-Key: <key>` (narratorr sends the latter);
+loopback is trusted without it. To **bring your own**, write `/data/api-key` (or mount
+it as a Docker secret) before first boot — don't pass it via env.
+
 **Knobs** (env vars / compose substitution):
 - `LIBRARY_PATH` *(required)* — host folder of audiobooks, mounted read-only at `/library`.
-- `EARWITNESS_API_KEY` — when set, `/api/*` requires the key as `Authorization: Bearer <key>` **or** `X-Api-Key: <key>` (narratorr's connector sends the latter). Without it the API is **open on the LAN** and the app logs a warning at boot. (Setting a key also locks out the keyless browser UI — it's the API-consumer / Narratorr seam.)
+- `EARWITNESS_API_KEY_FILE` (default `/data/api-key`) — where the self-owned key is stored. Change the location, not the value-source; the key is never read from env.
 - `EARWITNESS_LIBRARY_ROOT` (default `/audiobooks`; set to `/library` in the sample compose) — root that `POST /api/v1/attribution` resolves narratorr's library-relative paths against, with a containment guard. Point it at the same library mount.
 - `OLLAMA_MODEL` (default `qwen2.5:7b-instruct`) — 7B on CPU is slow but fine for a batch scan; drop to a 3B if it drags.
 - `WHISPER_MODEL` (default `base.en`) — CPU `base.en` mangles proper nouns (author/narrator names); bump to `small.en` or `medium` for accuracy at the cost of speed.
@@ -41,10 +52,10 @@ docker run -d -p 3000:3000 \
   -e BROWSE_ROOTS=/library \
   -e OLLAMA_HOST=http://host.docker.internal:11434 \
   -e WHISPER_BACKEND=openai-compat -e WHISPER_HOST=http://host.docker.internal:8000 \
-  -e EARWITNESS_API_KEY=changeme \
   -v /srv/audiobooks:/library:ro \
   -v earwitness-data:/data \
   narratorr-earwitness
+# The key is minted to /data/api-key on first boot — `docker logs <container> | grep "API key"`.
 ```
 
 The bare image defaults to `WHISPER_BACKEND=openai-compat` (the GPU path) — point

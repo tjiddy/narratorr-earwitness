@@ -7,6 +7,7 @@
 **Supersedes:** `EARWITNESS-RESOLVE-API-PROPOSAL.md`, `NARRATORR-INTEGRATION.md`.
 **Amendment (post-sign-off, 2026-06-16 → v0.2.1):** error codes split by retry semantics — `503` is transient-only; permanent per-file failures are `422`. See changelog #5 and §2.
 **Amendment (post-sign-off, 2026-06-16 → v0.3.0):** earwitness now **owns its API key** — generated + persisted on first boot, no longer set via an `EARWITNESS_API_KEY` env var. The wire protocol is unchanged (`X-Api-Key`); only **provisioning** changes for narratorr's connector. See changelog #6 and §7.1.
+**Amendment (post-sign-off, 2026-06-16 → v0.4.0):** added **`GET /api/v1/health`** — narratorr's Test Connection probe (#1526), which earwitness had never implemented because it was never in this contract. See changelog #7 and §2.
 
 ---
 
@@ -18,6 +19,7 @@
 4. **All six §10 open questions resolved** (§10 below).
 5. **Error codes split by retry semantics (amendment → v0.2.1).** A deterministic per-book failure (corrupt/undecodable audio) no longer returns `503`. `503` is now **transient-only** ("retry me"); permanent per-file failures return **`422`** ("don't retry"), alongside the ambiguous-folder case. This restores the invariant `200` ⟺ "I processed the audio," and lets the client decide retry on the **status code alone**. (The original overloaded `503` forced narratorr to guess transient-vs-permanent and bake in a workaround.)
 6. **API key is self-owned, not env-provided (amendment → v0.3.0).** earwitness generates a random key on first boot and persists it (default `/data/api-key`, beside the cache dir so a cache wipe can't rotate it), printing it in the boot log. **The wire contract is unchanged — narratorr still sends `X-Api-Key: <key>`** — but *provisioning* changes: instead of an operator setting a shared `EARWITNESS_API_KEY` on both sides, narratorr reads earwitness's minted key (boot log, or `docker compose exec earwitness cat /data/api-key`) into its connector. Auth is enforced for **network** callers only; loopback is trusted. A stale `EARWITNESS_API_KEY` env is ignored (earwitness logs a warning). See §7.1.
+7. **`GET /api/v1/health` added (amendment → v0.4.0).** narratorr's Test Connection (#1526) probes `GET /api/v1/health`; earwitness never implemented it because it was a narratorr-side decision that never landed in this contract, so the probe 404'd and narratorr reported "Unable to reach server." earwitness now serves it: `200 { ok, mode, version }`, gated by the same `/api/*` auth — so Test Connection validates the **key** too (wrong key → `401` → narratorr's "Invalid API key"). Liveness + identity only; dependency health stays in `/api/config`. See §2.
 
 ---
 
@@ -142,6 +144,18 @@ Rollup mapping for a multi-value field: all expected matched & nothing unexpecte
 Errors use earwitness's **`{ error: string }`** envelope — a single human-readable message; the HTTP **status** is the machine-actionable code. (This is flat across every earwitness route, and differs from narratorr's own `{ error: { code, message } }` convention — branch on the status, not the body.)
 
 **Retry semantics (the axis the batch worker cares about):** `200` → use it (incl. `attributionPresent:false` = "processed, no credit"). `503` → transient, retry with backoff. `422` → permanent, surrender this file and surface the message. The client branches on the **status code alone**, never on the error body.
+
+### `GET /api/v1/health`
+
+narratorr's **Test Connection** probe (#1526; added earwitness-side in v0.4.0). Shallow by design — liveness + identity only, **not** dependency health (Ollama/Whisper status lives in `/api/config`). Gated by the same `/api/*` auth as everything else, so a `200` confirms **both** reachability **and** a valid key.
+
+**Request:** no body. Auth: `X-Api-Key` like every `/api/*` call (loopback is trusted, so a same-host probe needs no key).
+
+**Response `200`:**
+```json
+{ "ok": true, "mode": "standalone", "version": "0.4.0" }
+```
+`mode` is `"standalone"` or `"narratorr"`; `version` is earwitness's package version. `401` if the key is missing/invalid. narratorr maps `200` → connected, `401`/`403` → "Invalid API key," anything else → "Unable to reach server."
 
 ---
 

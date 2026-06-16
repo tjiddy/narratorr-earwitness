@@ -18,3 +18,13 @@ export const configResponseSchema = z.object({
   ffmpeg: z.object({ path: z.string().nullable(), ok: z.boolean() }),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
+
+// Liveness + identity probe for narratorr's "Test Connection" (#1526). Gated by the
+// same /api/* auth as everything else, so a 200 also confirms the caller's API key is
+// valid — wrong key → 401, unreachable → network error. `ok` is always true on 200.
+export const healthResponseSchema = z.object({
+  ok: z.literal(true),
+  mode: z.enum(['standalone', 'narratorr']),
+  version: z.string(),
+});
+export type HealthResponse = z.infer<typeof healthResponseSchema>;

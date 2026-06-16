@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -15,6 +16,17 @@ try {
 // so launching from a different directory doesn't silently relocate state.
 export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const resolveFromRoot = (p: string) => (path.isAbsolute(p) ? p : path.resolve(APP_ROOT, p));
+
+// App version for the /api/v1/health probe — read from package.json (copied into the
+// runtime image, anchored to APP_ROOT). Falls back rather than crashing the server.
+const version: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 // Numeric env var: empty/absent → default, otherwise require an all-digits string.
 // Unlike parseInt ("60abc" → 60), a non-numeric value is rejected outright.
@@ -97,6 +109,7 @@ const mode: 'standalone' | 'narratorr' =
 export const normalizeApiKey = (v: string | undefined): string | null => v?.trim() || null;
 
 export const config = {
+  version,
   port: env.PORT,
   bindHost: env.BIND_HOST,
   // Filled at startup by ensureApiKey() (read-from-file or generate-and-persist).

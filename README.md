@@ -103,6 +103,8 @@ All under `/api` (gated for network callers by the self-owned API key; loopback 
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /api/v1/health` | Liveness + identity `{ ok, mode, version }` — narratorr's Test Connection probe (auth-gated, so it also validates the key) |
+| `POST /api/v1/attribution` | Identify/verify one audiobook by path → `{ detection, comparison? }` (the narratorr integration endpoint) |
 | `GET /api/config` | Readiness + mode (paths/hosts shown only to loopback/authed callers) |
 | `GET /api/browse?path=` | Browse within `BROWSE_ROOTS` (realpath + symlink containment) |
 | `POST /api/scans` | Start a scan `{ source: 'local', root }` → `{ id }` |

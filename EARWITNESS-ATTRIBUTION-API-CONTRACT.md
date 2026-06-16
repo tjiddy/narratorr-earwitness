@@ -6,6 +6,7 @@
 **Endpoint:** `POST /api/v1/attribution`
 **Supersedes:** `EARWITNESS-RESOLVE-API-PROPOSAL.md`, `NARRATORR-INTEGRATION.md`.
 **Amendment (post-sign-off, 2026-06-16 → v0.2.1):** error codes split by retry semantics — `503` is transient-only; permanent per-file failures are `422`. See changelog #5 and §2.
+**Amendment (post-sign-off, 2026-06-16 → v0.3.0):** earwitness now **owns its API key** — generated + persisted on first boot, no longer set via an `EARWITNESS_API_KEY` env var. The wire protocol is unchanged (`X-Api-Key`); only **provisioning** changes for narratorr's connector. See changelog #6 and §7.1.
 
 ---
 
@@ -16,6 +17,7 @@
 3. **`confidence` is returned raw; no hidden threshold.** The evidence-guard stays (correctness — unsupported fields are nulled). A confidence *floor* below which a verdict is ignored is narratorr policy, so earwitness never folds low-confidence into `unknown` behind the scenes.
 4. **All six §10 open questions resolved** (§10 below).
 5. **Error codes split by retry semantics (amendment → v0.2.1).** A deterministic per-book failure (corrupt/undecodable audio) no longer returns `503`. `503` is now **transient-only** ("retry me"); permanent per-file failures return **`422`** ("don't retry"), alongside the ambiguous-folder case. This restores the invariant `200` ⟺ "I processed the audio," and lets the client decide retry on the **status code alone**. (The original overloaded `503` forced narratorr to guess transient-vs-permanent and bake in a workaround.)
+6. **API key is self-owned, not env-provided (amendment → v0.3.0).** earwitness generates a random key on first boot and persists it (default `/data/api-key`, beside the cache dir so a cache wipe can't rotate it), printing it in the boot log. **The wire contract is unchanged — narratorr still sends `X-Api-Key: <key>`** — but *provisioning* changes: instead of an operator setting a shared `EARWITNESS_API_KEY` on both sides, narratorr reads earwitness's minted key (boot log, or `docker compose exec earwitness cat /data/api-key`) into its connector. Auth is enforced for **network** callers only; loopback is trusted. A stale `EARWITNESS_API_KEY` env is ignored (earwitness logs a warning). See §7.1.
 
 ---
 

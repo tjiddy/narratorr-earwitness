@@ -26,7 +26,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   const serveStatic = opts.serveStatic ?? !config.isDev;
   const clientDir = opts.clientDir ?? path.resolve(APP_ROOT, 'dist/client');
 
-  const app = Fastify({ logger: { level: config.isDev ? 'info' : 'warn' } }).withTypeProvider<ZodTypeProvider>();
+  const app = Fastify({ logger: { level: config.logLevel } }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 

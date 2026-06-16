@@ -1,6 +1,7 @@
 import { discover } from '@core/discover.js';
 import { processBook, type ProcessDeps } from '@core/pipeline.js';
 import { compareIdentity, type Expected } from '@core/compare-llm.js';
+import type { Logger } from '@core/logger.js';
 import type { AttributionRequest, Comparison, Detection } from '@shared/schemas.js';
 import { realOrNull, resolveWithinRoot } from '../paths.js';
 
@@ -70,6 +71,8 @@ export interface AttributeInput {
   path: string;
   expected?: AttributionRequest['expected'];
   signal?: AbortSignal | undefined;
+  /** Request-scoped logger (the route passes req.log). Threads through to the pipeline. */
+  logger?: Logger | undefined;
 }
 
 export interface AttributeResult {
@@ -83,27 +86,44 @@ export class AttributionService {
   constructor(private readonly deps: AttributionServiceDeps) {}
 
   async attribute(input: AttributeInput): Promise<AttributeResult> {
-    if (this.active >= this.deps.maxActive) throw new AttributionCapacityError(this.deps.maxActive);
+    const log = input.logger;
+    log?.info({ path: input.path, hasExpected: !!input.expected }, 'attribution: request received');
+
+    if (this.active >= this.deps.maxActive) {
+      log?.warn({ path: input.path, active: this.active, limit: this.deps.maxActive }, 'attribution: at capacity → 503');
+      throw new AttributionCapacityError(this.deps.maxActive);
+    }
     this.active += 1;
     try {
       const rootReal = await realOrNull(this.deps.libraryRoot);
-      if (!rootReal) throw new LibraryRootError(this.deps.libraryRoot);
+      if (!rootReal) {
+        log?.warn({ root: this.deps.libraryRoot }, 'attribution: library root not accessible → 503');
+        throw new LibraryRootError(this.deps.libraryRoot);
+      }
 
       const resolved = await resolveWithinRoot(input.path, rootReal);
       if (!resolved.ok) {
+        log?.warn({ path: input.path, reason: resolved.reason }, 'attribution: path rejected');
         throw resolved.reason === 'forbidden'
           ? new PathForbiddenError(input.path)
           : new PathNotFoundError(input.path);
       }
 
       const books = await discover(resolved.real);
-      if (books.length === 0) throw new PathNotFoundError(input.path); // exists, but no audio
-      if (books.length > 1) throw new AmbiguousPathError(books.length);
+      if (books.length === 0) {
+        log?.warn({ path: input.path }, 'attribution: no audio found at path → 404');
+        throw new PathNotFoundError(input.path); // exists, but no audio
+      }
+      if (books.length > 1) {
+        log?.warn({ path: input.path, count: books.length }, 'attribution: ambiguous folder → 422');
+        throw new AmbiguousPathError(books.length);
+      }
       const book = books[0]!;
 
       // Stage 1: blind extraction → detection (evidence-guarded fact).
-      const result = await processBook(book, { ...this.deps, signal: input.signal });
+      const result = await processBook(book, { ...this.deps, signal: input.signal, logger: log });
       if (result.error !== null) {
+        log?.warn({ path: input.path, error: result.error, kind: result.errorKind }, 'attribution: processing failed');
         // Permanent (undecodable audio) → 422; transient (timeout/dependency) → 503.
         throw result.errorKind === 'unprocessable'
           ? new UnprocessableContentError(result.error)
@@ -117,7 +137,13 @@ export class AttributionService {
         confidence: result.confidence,
       };
 
-      if (!input.expected) return { detection };
+      if (!input.expected) {
+        log?.info(
+          { path: input.path, attributionPresent: detection.attributionPresent, confidence: detection.confidence },
+          'attribution: complete (detection only, no expected)',
+        );
+        return { detection };
+      }
 
       // Stage 2: sighted comparison → verdict (never mutates detection).
       const expected: Expected = {
@@ -131,6 +157,18 @@ export class AttributionService {
         cache: this.deps.cache,
         signal: input.signal,
       });
+      log?.info(
+        {
+          path: input.path,
+          status: comparison.status,
+          fields: {
+            title: comparison.fields.title.status,
+            authors: comparison.fields.authors.status,
+            narrators: comparison.fields.narrators.status,
+          },
+        },
+        'attribution: complete (comparison)',
+      );
       return { detection, comparison };
     } finally {
       this.active -= 1;

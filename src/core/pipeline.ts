@@ -6,6 +6,7 @@ import { extract, PROMPT_VERSION, SCHEMA_VERSION } from './extract.js';
 import { readTags } from './tags.js';
 import { AudioDecodeError } from './audio.js';
 import { compareAttribution, splitPeople } from './compare.js';
+import type { Logger } from './logger.js';
 
 const MIN_TRANSCRIPT_CHARS = 15;
 const EXCERPT_CHARS = 400;
@@ -25,6 +26,10 @@ export interface ProcessDeps {
   signal?: AbortSignal | undefined;
   transcribeTimeoutMs?: number | undefined;
   extractTimeoutMs?: number | undefined;
+  /** Optional request-scoped logger. When present, the pipeline narrates every step
+   *  — transcript size + excerpt, raw extraction, evidence-guard nulling, final
+   *  detection — so "why did it say X?" is answerable from the logs alone. */
+  logger?: Logger | undefined;
 }
 
 function emptyAttr(): Attribution {
@@ -109,6 +114,11 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
     introTrackPath: book.introTrackPath,
     introTrackReason: book.introTrackReason,
   };
+  const log = deps.logger;
+  log?.info(
+    { book: book.name, sourcePath: book.source, introTrack: book.introTrackPath, introReason: book.introTrackReason },
+    'pipeline: processing book',
+  );
 
   try {
     const identity = await fileIdentity(book.introTrackPath);
@@ -123,6 +133,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       backend: deps.transcribe.name,
     });
     let transcript = await deps.cache.get<string>('transcript', tKey);
+    const transcriptCached = transcript !== null;
     if (transcript === null) {
       transcript = await deps.transcribe.transcribe(book.introTrackPath, {
         ffmpegPath: deps.ffmpegPath,
@@ -133,12 +144,21 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       });
       await deps.cache.set('transcript', tKey, transcript);
     }
+    log?.info(
+      { book: book.name, cache: transcriptCached ? 'hit' : 'miss', chars: transcript.length, excerpt: transcript.slice(0, 200) },
+      'pipeline: transcribed',
+    );
+    log?.debug({ book: book.name, transcript }, 'pipeline: full transcript');
 
     const tags = await readTags(book.introTrackPath);
     const transcriptExcerpt = transcript.slice(0, EXCERPT_CHARS);
 
     // No usable speech → book-level "couldn't determine", no field flags.
     if (transcript.replace(/\s/g, '').length < MIN_TRANSCRIPT_CHARS) {
+      log?.warn(
+        { book: book.name, chars: transcript.length },
+        'pipeline: no usable speech in window → attributionPresent=false (likely silence/music, or credit is elsewhere in the file)',
+      );
       return {
         ...base,
         attributionPresent: false,
@@ -164,6 +184,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
     const cached = await deps.cache.get<unknown>('extraction', eKey);
     const cachedValid = cached === null ? null : extractionSchema.safeParse(cached);
     let extraction = cachedValid && cachedValid.success ? cachedValid.data : null;
+    const extractionCached = extraction !== null;
     if (extraction === null) {
       extraction = await extract(transcript, {
         ...deps.ollama,
@@ -171,9 +192,30 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       });
       await deps.cache.set('extraction', eKey, extraction);
     }
+    log?.info(
+      {
+        book: book.name,
+        cache: extractionCached ? 'hit' : 'miss',
+        raw: { title: extraction.title, author: extraction.author, narrator: extraction.narrator },
+        confidence: extraction.confidence,
+        attributionPresent: extraction.attributionPresent,
+      },
+      'pipeline: extracted (raw, pre-evidence-guard)',
+    );
+    log?.debug({ book: book.name, evidence: extraction.evidence }, 'pipeline: extraction evidence spans');
 
     // 3. Enforce evidence (anti-hallucination) before trusting any detected field.
     const verified = enforceEvidence(extraction, transcript);
+
+    const nulledByGuard = (['title', 'author', 'narrator'] as const).filter(
+      (f) => extraction[f] !== null && verified[f] === null,
+    );
+    if (nulledByGuard.length > 0) {
+      log?.warn(
+        { book: book.name, nulled: nulledByGuard, confidence: verified.confidence },
+        'pipeline: evidence guard nulled unsupported field(s) — detected but not found verbatim in the transcript',
+      );
+    }
 
     const detected = {
       title: verified.title,
@@ -184,6 +226,11 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
     const flags = verified.attributionPresent
       ? compareAttribution(detected, tags, verified.confidence)
       : [];
+
+    log?.info(
+      { book: book.name, attributionPresent: verified.attributionPresent, detected, confidence: verified.confidence },
+      'pipeline: detection complete',
+    );
 
     return {
       ...base,
@@ -209,6 +256,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
     // Undecodable audio is permanent for this file (don't retry); everything else —
     // timeouts, dependency hiccups, the fuzzy middle — defaults to transient (retry-safe).
     const errorKind = err instanceof AudioDecodeError ? 'unprocessable' : 'transient';
+    log?.warn({ book: book.name, error: message, errorKind }, 'pipeline: processing failed');
     return {
       ...base,
       attributionPresent: false,

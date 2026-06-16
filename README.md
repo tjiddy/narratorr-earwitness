@@ -69,6 +69,7 @@ All config is environment variables (`.env` for dev, real env in Docker). See
 | `WHISPER_HOST` / `WHISPER_MODEL` | `localhost:8000` / `large-v3-turbo` | Transcription service |
 | `EARWITNESS_API_KEY_FILE` | `<cache>/../api-key` | Where earwitness persists its **self-owned** key (minted on first boot, printed once). Override the location, not the source — the key isn't read from env. `/api/*` requires it from the network (`Bearer` or `X-Api-Key`); loopback is trusted |
 | `BIND_HOST` | `0.0.0.0` | Bind address |
+| `LOG_LEVEL` | `info` | Pino level. The attribution chain logs at `info`; `debug` adds full transcripts + evidence spans |
 | `MAX_CONCURRENT_BOOKS` / `MAX_CONCURRENT_TRANSCRIBES` | `2` / `1` | Concurrency caps |
 
 ## Docker

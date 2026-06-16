@@ -163,6 +163,67 @@ describe('processBook — extraction cache (P2-4)', () => {
   });
 });
 
+describe('processBook — logging (observability)', () => {
+  it('narrates transcript, raw extraction, and final detection when a logger is passed', async () => {
+    const transcript = 'Audible presents Dune by Frank Herbert, narrated by Scott Brick.';
+    mockOllama({
+      attributionPresent: true,
+      title: 'Dune',
+      author: 'Frank Herbert',
+      narrator: 'Scott Brick',
+      publisher: null,
+      confidence: 0.9,
+      evidence: { title: 'Dune', author: 'Frank Herbert', narrator: 'Scott Brick' },
+    });
+    const msgs: string[] = [];
+    const logger = {
+      info: (_o: object, m?: string) => m && msgs.push(m),
+      warn: (_o: object, m?: string) => m && msgs.push(m),
+      debug: (_o: object, m?: string) => m && msgs.push(m),
+    };
+    await processBook(await makeFileBook(), freshDeps(fixedProvider(transcript), { logger }));
+    expect(msgs).toContain('pipeline: transcribed');
+    expect(msgs).toContain('pipeline: extracted (raw, pre-evidence-guard)');
+    expect(msgs).toContain('pipeline: detection complete');
+  });
+
+  it('warns when the evidence guard nulls an unsupported field', async () => {
+    const transcript = 'Just some quiet prose, nothing announced here at all.';
+    mockOllama({
+      attributionPresent: true,
+      title: 'A Hallucinated Title',
+      author: null,
+      narrator: null,
+      publisher: null,
+      confidence: 0.8,
+      evidence: { title: 'A Hallucinated Title', author: null, narrator: null },
+    });
+    const msgs: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (_o: object, m?: string) => m && msgs.push(m),
+      debug: () => {},
+    };
+    await processBook(await makeFileBook(), freshDeps(fixedProvider(transcript), { logger }));
+    expect(msgs.some((m) => m.includes('evidence guard nulled'))).toBe(true);
+  });
+
+  it('runs silently (no throw) when no logger is passed', async () => {
+    mockOllama({
+      attributionPresent: false,
+      title: null,
+      author: null,
+      narrator: null,
+      publisher: null,
+      confidence: 0,
+      evidence: { title: null, author: null, narrator: null },
+    });
+    await expect(
+      processBook(await makeFileBook(), freshDeps(fixedProvider('Some prose, nothing announced here.'))),
+    ).resolves.toBeTruthy();
+  });
+});
+
 describe('processBook — cancellation & concurrency (P1-3, P1-2)', () => {
   it('rethrows on job cancellation instead of recording an error result', async () => {
     const provider: TranscribeProvider = {

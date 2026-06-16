@@ -40,6 +40,10 @@ const intFromString = (def: string) =>
 const envSchema = z.object({
   PORT: intFromString('3000').pipe(z.number().int().min(1).max(65535)),
   NODE_ENV: z.string().default(''),
+  // Pino log level. Default 'info' (both dev and prod) — earwitness narrates the
+  // attribution chain at info, so the default must show it. Drop to 'warn' for quiet,
+  // raise to 'debug' for full transcripts + evidence spans.
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).optional(),
   CORS_ORIGIN: z.string().default('http://localhost:5173').transform((v) => v || 'http://localhost:5173'),
 
   // Network exposure controls. BIND_HOST defaults to 0.0.0.0 so Docker/LAN keep
@@ -110,6 +114,7 @@ export const normalizeApiKey = (v: string | undefined): string | null => v?.trim
 
 export const config = {
   version,
+  logLevel: env.LOG_LEVEL ?? 'info',
   port: env.PORT,
   bindHost: env.BIND_HOST,
   // Filled at startup by ensureApiKey() (read-from-file or generate-and-persist).

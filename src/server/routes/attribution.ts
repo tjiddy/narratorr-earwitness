@@ -44,6 +44,7 @@ export function registerAttributionRoutes(app: FastifyInstance, attribution: Att
         const { detection, comparison } = await attribution.attribute({
           path: req.body.path,
           expected: req.body.expected,
+          logger: req.log, // request-scoped (carries reqId) → narrates the whole chain
           // Per-stage timeouts in the pipeline guard hangs; no request-abort wiring needed for 1.0.
         });
         return {

@@ -43,3 +43,23 @@ export function isRoot(real: string, rroots: string[]): boolean {
   const c = caseFold(real);
   return rroots.some((r) => caseFold(r) === c);
 }
+
+export type ResolveWithinRootResult =
+  | { ok: true; real: string }
+  | { ok: false; reason: 'forbidden' | 'not_found' };
+
+/**
+ * Resolve a library-RELATIVE path against `realRoot` (already canonical), used by the
+ * attribution endpoint. Refuses absolute inputs and any escape — lexical check first,
+ * then realpath + containment so a symlink can't point outside. `forbidden` = escape
+ * attempt (→ 403); `not_found` = doesn't exist (→ 404).
+ */
+export async function resolveWithinRoot(relativePath: string, realRoot: string): Promise<ResolveWithinRootResult> {
+  if (path.isAbsolute(relativePath)) return { ok: false, reason: 'forbidden' };
+  const candidate = path.resolve(realRoot, relativePath);
+  if (!isWithin(candidate, realRoot)) return { ok: false, reason: 'forbidden' }; // defense-in-depth, pre-disk
+  const real = await realOrNull(candidate);
+  if (!real) return { ok: false, reason: 'not_found' };
+  if (!isWithin(real, realRoot)) return { ok: false, reason: 'forbidden' }; // symlink escape
+  return { ok: true, real };
+}

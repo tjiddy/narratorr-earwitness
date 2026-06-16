@@ -1,8 +1,18 @@
+> [!WARNING]
+> **SUPERSEDED (2026-06-16) by [`EARWITNESS-ATTRIBUTION-API-CONTRACT.md`](./EARWITNESS-ATTRIBUTION-API-CONTRACT.md) (the locked contract).**
+> This document describes the original "earwitness pulls the library and POSTs audits back" direction.
+> After narratorr's 2026-06-15 direction doc, the integration inverted: **narratorr calls a single
+> stateless earwitness `POST /api/v1/attribution` endpoint** and owns the loop. The asks below (`path` on
+> the book DTO, the `attribution-audit` write endpoint) are now **parked/optional**, not blockers. Kept for
+> historical context and the §4.3 reasoning, which still holds. Read the contract instead.
+
+---
+
 # Narratorr ↔ Earwitness — API Integration Handoff
 
 **For:** the Narratorr API team
 **From:** Earwitness ([github.com/tjiddy/narratorr-earwitness](https://github.com/tjiddy/narratorr-earwitness))
-**Status:** Earwitness is built and running standalone; the Narratorr integration is blocked on the items in §4.
+**Status:** ⚠️ Superseded — see banner above.
 
 ---
 

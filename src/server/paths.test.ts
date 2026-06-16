@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isWithin, resolveWithinRoots } from './paths.js';
+import { isWithin, resolveWithinRoots, resolveWithinRoot } from './paths.js';
 
 describe('isWithin', () => {
   it('accepts a child inside the root', () => {
@@ -62,5 +62,49 @@ describe('resolveWithinRoots', () => {
       return; // no symlink privilege (common on Windows) — skip
     }
     expect(await resolveWithinRoots(link, [root])).toBeNull();
+  });
+});
+
+describe('resolveWithinRoot (library-relative, attribution endpoint)', () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ew-libroot-')));
+    await fs.mkdir(path.join(root, 'Author', 'Book'), { recursive: true });
+  });
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('resolves an in-root relative path', async () => {
+    const r = await resolveWithinRoot(path.join('Author', 'Book'), root);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.real.endsWith('Book')).toBe(true);
+  });
+
+  it('forbids an absolute path', async () => {
+    const r = await resolveWithinRoot(path.resolve(root, 'Author'), root);
+    expect(r).toEqual({ ok: false, reason: 'forbidden' });
+  });
+
+  it('forbids a parent traversal', async () => {
+    const r = await resolveWithinRoot(path.join('..', '..'), root);
+    expect(r).toEqual({ ok: false, reason: 'forbidden' });
+  });
+
+  it('reports not_found for a missing relative path', async () => {
+    const r = await resolveWithinRoot('Author/Nope', root);
+    expect(r).toEqual({ ok: false, reason: 'not_found' });
+  });
+
+  it('forbids a symlink that escapes the root', async () => {
+    const link = path.join(root, 'escape');
+    try {
+      await fs.symlink(path.dirname(root), link, 'dir'); // points OUTSIDE root
+    } catch {
+      return; // no symlink privilege — skip
+    }
+    const r = await resolveWithinRoot('escape', root);
+    expect(r).toEqual({ ok: false, reason: 'forbidden' });
   });
 });

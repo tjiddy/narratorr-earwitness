@@ -73,6 +73,11 @@ const envSchema = z.object({
 
   NARRATORR_URL: z.string().optional(),
   NARRATORR_API_KEY: z.string().optional(),
+
+  // Shared library mount root that POST /api/v1/attribution resolves request paths
+  // against. narratorr sends library-RELATIVE POSIX paths; we join + containment-guard
+  // them here. Default matches the deployed compose's shared mount.
+  EARWITNESS_LIBRARY_ROOT: z.string().default('/audiobooks').transform((v) => v || '/audiobooks'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -109,6 +114,7 @@ export const config = {
   ffmpegPath: env.FFMPEG_PATH ?? null,
   cacheDir: env.CACHE_DIR,
   reportsDir: env.REPORTS_DIR,
+  libraryRoot: env.EARWITNESS_LIBRARY_ROOT,
   narratorr:
     mode === 'narratorr'
       ? { url: env.NARRATORR_URL as string, apiKey: env.NARRATORR_API_KEY as string }

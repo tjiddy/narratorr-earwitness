@@ -4,8 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildApp } from './app.js';
 import type { ScanJobService } from './services/scan-job.service.js';
+import type { AttributionService } from './services/attribution.service.js';
 
-// Minimal stand-in — only the methods the routes touch.
+// Minimal stand-ins — only the methods the routes touch.
 function fakeScans(over: Partial<ScanJobService> = {}): ScanJobService {
   return {
     start: () => 'scan-id',
@@ -16,9 +17,15 @@ function fakeScans(over: Partial<ScanJobService> = {}): ScanJobService {
   } as unknown as ScanJobService;
 }
 
+function fakeAttribution(over: Partial<AttributionService> = {}): AttributionService {
+  return { attribute: async () => ({ detection: {} }), ...over } as unknown as AttributionService;
+}
+
+const base = { scans: fakeScans(), attribution: fakeAttribution() };
+
 describe('buildApp', () => {
   it('returns 404 with the {error} envelope for a missing scan (P2-7)', async () => {
-    const app = await buildApp({ scans: fakeScans(), serveStatic: false });
+    const app = await buildApp({ ...base, serveStatic: false });
     const res = await app.inject({ method: 'POST', url: '/api/scans/xyz/cancel' });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({ error: 'scan not found' });
@@ -26,7 +33,7 @@ describe('buildApp', () => {
   });
 
   it('normalizes a validation failure into the {error} envelope (P2-extra)', async () => {
-    const app = await buildApp({ scans: fakeScans(), serveStatic: false });
+    const app = await buildApp({ ...base, serveStatic: false });
     const res = await app.inject({ method: 'POST', url: '/api/scans', payload: { source: 'local' } }); // root missing
     expect(res.statusCode).toBe(400);
     const body = res.json();
@@ -46,7 +53,7 @@ describe('buildApp', () => {
     });
 
     it('serves index.html for a non-API GET (SPA fallback)', async () => {
-      const app = await buildApp({ scans: fakeScans(), serveStatic: true, clientDir });
+      const app = await buildApp({ ...base, serveStatic: true, clientDir });
       const res = await app.inject({ method: 'GET', url: '/some/spa/route' });
       expect(res.statusCode).toBe(200);
       expect(res.headers['content-type']).toMatch(/html/);
@@ -55,7 +62,7 @@ describe('buildApp', () => {
     });
 
     it('still 404s unknown API routes as JSON, not HTML', async () => {
-      const app = await buildApp({ scans: fakeScans(), serveStatic: true, clientDir });
+      const app = await buildApp({ ...base, serveStatic: true, clientDir });
       const res = await app.inject({ method: 'GET', url: '/api/nope' });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toHaveProperty('error');

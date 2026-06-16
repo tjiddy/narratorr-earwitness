@@ -28,7 +28,8 @@ model on the first scan; both are cached in named volumes, so it's a one-time co
 
 **Knobs** (env vars / compose substitution):
 - `LIBRARY_PATH` *(required)* — host folder of audiobooks, mounted read-only at `/library`.
-- `EARWITNESS_API_KEY` — when set, `/api/*` requires `Authorization: Bearer <key>`. Without it the API is **open on the LAN** and the app logs a warning at boot. (Setting a key also locks out the keyless browser UI — it's the API-consumer / Narratorr seam.)
+- `EARWITNESS_API_KEY` — when set, `/api/*` requires the key as `Authorization: Bearer <key>` **or** `X-Api-Key: <key>` (narratorr's connector sends the latter). Without it the API is **open on the LAN** and the app logs a warning at boot. (Setting a key also locks out the keyless browser UI — it's the API-consumer / Narratorr seam.)
+- `EARWITNESS_LIBRARY_ROOT` (default `/audiobooks`; set to `/library` in the sample compose) — root that `POST /api/v1/attribution` resolves narratorr's library-relative paths against, with a containment guard. Point it at the same library mount.
 - `OLLAMA_MODEL` (default `qwen2.5:7b-instruct`) — 7B on CPU is slow but fine for a batch scan; drop to a 3B if it drags.
 - `WHISPER_MODEL` (default `base.en`) — CPU `base.en` mangles proper nouns (author/narrator names); bump to `small.en` or `medium` for accuracy at the cost of speed.
 

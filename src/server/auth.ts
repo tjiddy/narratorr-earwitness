@@ -12,7 +12,12 @@ function isLoopback(ip: string | undefined): boolean {
 }
 
 export function hasValidKey(req: FastifyRequest): boolean {
-  return config.apiKey !== null && req.headers.authorization === `Bearer ${config.apiKey}`;
+  if (config.apiKey === null) return false;
+  // Accept `Authorization: Bearer <key>` (the UI/our own clients) OR `X-Api-Key: <key>`
+  // (narratorr's connector, and the convention across narratorr's own APIs).
+  return (
+    req.headers.authorization === `Bearer ${config.apiKey}` || req.headers['x-api-key'] === config.apiKey
+  );
 }
 
 /** Trusted = authenticated with the API key, or connecting over loopback. */

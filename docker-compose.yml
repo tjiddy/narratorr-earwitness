@@ -20,6 +20,10 @@ services:
       BIND_HOST: 0.0.0.0
       EARWITNESS_API_KEY: ${EARWITNESS_API_KEY:-}
       BROWSE_ROOTS: /library
+      # Root that POST /api/v1/attribution resolves narratorr's library-relative paths
+      # against — point it at the same library mount. (narratorr sends RELATIVE paths,
+      # so the two containers' absolute mount paths need not match, only the library root.)
+      EARWITNESS_LIBRARY_ROOT: /library
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
       # GPU-less → in-process CPU Whisper. base.en is fast but mangles proper nouns;

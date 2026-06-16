@@ -2,8 +2,10 @@ import { Cache } from '@core/cache.js';
 import { ReportStore } from '@core/store.js';
 import { resolveFfmpeg } from '@core/ffmpeg.js';
 import { createTranscribeProvider, withTranscribeLimit } from '@core/transcribe/index.js';
+import type { ProcessDeps } from '@core/pipeline.js';
 import { config } from './config.js';
 import { ScanJobService } from './services/scan-job.service.js';
+import { AttributionService } from './services/attribution.service.js';
 import { buildApp } from './app.js';
 
 function isLoopbackHost(host: string): boolean {
@@ -22,10 +24,11 @@ async function main(): Promise<void> {
     config.maxConcurrentTranscribes,
   );
 
-  const scans = new ScanJobService({
+  // Shared pipeline deps — one cache + provider instance backs both the batch
+  // scanner and the per-file attribution endpoint.
+  const processDeps: ProcessDeps = {
     transcribe,
     cache: new Cache(config.cacheDir),
-    reportStore: new ReportStore(config.reportsDir),
     ffmpegPath,
     offsetSeconds: config.introOffsetSeconds,
     seconds: config.introSeconds,
@@ -33,11 +36,22 @@ async function main(): Promise<void> {
     ollama: config.ollama,
     transcribeTimeoutMs: config.transcribeTimeoutMs,
     extractTimeoutMs: config.extractTimeoutMs,
+  };
+
+  const scans = new ScanJobService({
+    ...processDeps,
+    reportStore: new ReportStore(config.reportsDir),
     maxConcurrentBooks: config.maxConcurrentBooks,
     maxActiveScans: config.maxActiveScans,
   });
 
-  const app = await buildApp({ scans });
+  const attribution = new AttributionService({
+    ...processDeps,
+    libraryRoot: config.libraryRoot,
+    maxActive: config.maxActiveScans,
+  });
+
+  const app = await buildApp({ scans, attribution });
 
   await app.listen({ port: config.port, host: config.bindHost });
   app.log.info(`earwitness on ${config.bindHost}:${config.port} (mode=${config.mode}, whisper=${config.whisper.backend})`);

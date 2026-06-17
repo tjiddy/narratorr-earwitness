@@ -62,12 +62,15 @@ export function createTransformersJsProvider(): TranscribeProvider {
         input: Float32Array,
         gen: Record<string, unknown>,
       ) => Promise<{ text?: string } | Array<{ text?: string }>>;
-      // return_timestamps lets the pipeline stitch the overlapping 30s chunks reliably;
-      // we discard the timestamps and keep only the text.
+      // return_timestamps DEFAULTS TRUE: it lets the pipeline stitch the overlapping 30s
+      // chunks reliably (we discard the timestamps, keep the text). With it off, a credit
+      // line straddling a 30s boundary can be dropped — confirmed on "Virgin River", where
+      // small.en lost the outro credit at false but recovered it at true (base.en got lucky
+      // either way). The debug console can still force it off to compare.
       const out = await run(audio, {
         chunk_length_s: 30,
         stride_length_s: 5,
-        return_timestamps: opts.returnTimestamps ?? false,
+        return_timestamps: opts.returnTimestamps ?? true,
       });
       const text = Array.isArray(out) ? out.map((o) => o.text ?? '').join(' ') : (out.text ?? '');
       return text.trim();

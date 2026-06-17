@@ -24,6 +24,13 @@ export function LibraryPicker({ onPick, onClose }: { onPick: (relPath: string) =
           {data?.root && <div className="truncate text-xs text-muted-foreground">relative to {data.root}</div>}
         </div>
         <div className="flex shrink-0 gap-2">
+          {/* Pick the folder you're standing in — a book is usually a folder, and you're
+              often already inside it. */}
+          {!atRoot && data && (
+            <Button variant="primary" size="sm" onClick={() => onPick(data.cwd)}>
+              Use this folder
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"

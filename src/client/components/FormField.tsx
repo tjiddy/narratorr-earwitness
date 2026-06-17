@@ -41,7 +41,7 @@ export function FormField({
   hint,
 }: FormFieldProps) {
   return (
-    <div>
+    <div className={className}>
       <label htmlFor={id} className="block text-sm font-medium mb-2">
         {label}
       </label>
@@ -55,7 +55,7 @@ export function FormField({
         min={min}
         max={max}
         step={step}
-        className={`${baseInputClass} ${error ? 'border-destructive' : 'border-border'} ${readOnly ? 'opacity-60 cursor-not-allowed' : ''} ${className ?? ''}`}
+        className={`${baseInputClass} ${error ? 'border-destructive' : 'border-border'} ${readOnly ? 'opacity-60 cursor-not-allowed' : ''}`}
         placeholder={placeholder}
       />
       {error && <p className="text-sm text-destructive mt-1">{error}</p>}

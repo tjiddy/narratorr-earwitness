@@ -67,7 +67,7 @@ export function App() {
   return (
     <div className="min-h-screen gradient-bg noise-overlay">
       <header className="sticky top-0 z-10 border-b border-border/50 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-3xl items-center justify-between gap-4 px-4 sm:h-20">
+        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between gap-4 px-4 sm:h-20">
           <div className="flex items-center gap-3">
             <div className="relative">
               <div className="absolute inset-0 rounded-xl bg-primary/20 blur-xl" />
@@ -92,7 +92,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl space-y-6 px-4 py-8">
+      <main className="mx-auto max-w-5xl space-y-6 px-4 py-8">
         <div className="flex items-center justify-between gap-3">
           <Tabs tabs={tabs} value={view} onChange={(v) => setView(v as View)} ariaLabel="Sections" />
           {view === 'scan' && scanId && (

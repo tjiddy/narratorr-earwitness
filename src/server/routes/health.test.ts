@@ -6,9 +6,10 @@ import type { AttributionService } from '../services/attribution.service.js';
 const fakeScans = () =>
   ({ start: () => 'x', progress: () => null, results: async () => null, cancel: () => false }) as unknown as ScanJobService;
 const fakeAttribution = () => ({ attribute: async () => ({ detection: {} }) }) as unknown as AttributionService;
+const fakeTranscribe = () => ({ name: 'fake', transcribe: async () => '', setProvider() {} });
 
 const appUnderTest = () =>
-  buildApp({ scans: fakeScans(), attribution: fakeAttribution(), serveStatic: false });
+  buildApp({ scans: fakeScans(), attribution: fakeAttribution(), transcribe: fakeTranscribe(), serveStatic: false });
 
 describe('GET /api/v1/health', () => {
   it('returns ok + mode + version (narratorr Test Connection probe)', async () => {

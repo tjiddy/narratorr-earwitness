@@ -69,22 +69,32 @@ the `deploy.resources` block in `docker-compose.yml`) and/or run a real GPU Whis
 service and set `WHISPER_BACKEND=openai-compat` + `WHISPER_HOST` instead of the
 in-process fallback. The model services need `nvidia-container-toolkit` on the host.
 
+## Settings (runtime config)
+
+The **Settings** tab in the UI changes the Ollama host/model, the Whisper backend/host/model,
+and lets you view/rotate the API key — **without env edits or a restart**. Edits persist to
+`/data/config.json` (an overlay over the env defaults) and apply live: Ollama and the Whisper
+model take effect on the next attribution; a Whisper **backend/host** change hot-swaps the
+provider in place. Paths, ports, browse roots and the library root stay environment-only.
+Open Settings from a non-loopback browser? Enter the API key once (it's stored in the browser
+and sent with every request); loopback is trusted without one.
+
 ## Debugging an attribution miss
 
-`POST /api/debug/attribution` (and a **Debug** tab in the UI) runs the real pipeline
-against one file and returns the **full transcript + internal trace**, and can A/B Whisper
-models in-process. It is **OFF by default** and exposes raw transcripts + absolute paths to
-any API-key holder, so treat it as a temporary diagnostic, not a standing feature.
+`POST /api/debug/attribution` (and a **Debug** tab in the UI) runs the real pipeline against
+one file and returns the **full transcript + internal trace**, and can A/B Whisper models
+in-process. As of v0.8.0 it's **always available** (no env flag — "want to debug, just
+click"); it's gated by the normal `/api` auth (loopback or API key) and exposes raw
+transcripts + absolute paths to any caller who clears that gate, so keep the key off untrusted
+networks.
 
-- **Enable:** set `EARWITNESS_DEBUG_ATTRIBUTION=true` and **recreate** the container — the
-  flag is read at boot, so use `docker compose up -d --force-recreate earwitness` (NOT
-  `restart`/`exec`). The Debug tab appears once it's on (the UI reads the flag from `/api/config`).
+- **Use it:** open the Debug tab, **Browse** the library to pick a book (the picker fills the
+  library-relative path), optionally set expected metadata + a model override, and Run.
 - **Model-override caveat:** a debug run that overrides the Whisper model shares the single
   in-process model slot with production, so it **evicts the live model** — the next real
   attribution pays a cold reload (~1.5 GB for large models). Debug is single-slot (one run
   at a time) but still competes with production for the transcribe semaphore. Overrides are
   allow-listed (known model names only) so a debug caller can't load an arbitrary remote model.
-- **Disable when done:** set it back to `false` (or unset) and recreate. Don't leave it on.
 
 ## Volumes
 

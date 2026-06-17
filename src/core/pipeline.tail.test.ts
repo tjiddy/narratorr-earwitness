@@ -83,7 +83,7 @@ function deps(over: Partial<ProcessDeps> = {}): ProcessDeps {
     ffmpegPath: 'ffmpeg',
     offsetSeconds: 0,
     seconds: 60,
-    whisperModel: 'm',
+    whisper: { model: 'm' },
     ollama: { host: 'http://ollama.test', model: 'm' },
     ...over,
   };

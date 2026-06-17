@@ -6,12 +6,15 @@ import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fas
 import { config, APP_ROOT } from './config.js';
 import { registerAuth } from './auth.js';
 import { registerRoutes } from './routes/index.js';
+import type { SwappableTranscribeProvider } from '@core/transcribe/index.js';
 import type { ScanJobService } from './services/scan-job.service.js';
 import type { AttributionService } from './services/attribution.service.js';
 
 export interface BuildAppOptions {
   scans: ScanJobService;
   attribution: AttributionService;
+  // The hot-swappable transcribe provider — the Settings route swaps its backend on save.
+  transcribe: SwappableTranscribeProvider;
   // Defaults derive from config; overridable so tests can exercise prod static
   // serving without flipping NODE_ENV on the singleton config.
   serveStatic?: boolean;
@@ -69,6 +72,6 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     });
   }
 
-  registerRoutes(app, { scans: opts.scans, attribution: opts.attribution });
+  registerRoutes(app, { scans: opts.scans, attribution: opts.attribution, transcribe: opts.transcribe });
   return app;
 }

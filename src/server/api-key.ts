@@ -20,12 +20,23 @@ export async function ensureApiKey(keyFile: string): Promise<ResolvedApiKey> {
   if (existing) return { key: existing, source: 'file', path: keyFile };
 
   const key = crypto.randomBytes(24).toString('hex');
+  await writeApiKey(keyFile, key);
+  return { key, source: 'generated', path: keyFile };
+}
+
+/** Persist a key 0600 (mkdir parents first). chmod is best-effort — a no-op on win32. */
+export async function writeApiKey(keyFile: string, key: string): Promise<void> {
   await fs.mkdir(path.dirname(keyFile), { recursive: true });
-  // 0600 on creation; chmod is best-effort to tighten a pre-existing loose file
-  // (both are effectively no-ops on win32, which is fine for dev).
   await fs.writeFile(keyFile, `${key}\n`, { mode: 0o600 });
   await fs.chmod(keyFile, 0o600).catch(() => {});
-  return { key, source: 'generated', path: keyFile };
+}
+
+/** Mint a fresh key and persist it, returning the new value. Used by the Settings
+ *  "rotate key" action — overwrites the file so the old key stops working immediately. */
+export async function rotateApiKey(keyFile: string): Promise<string> {
+  const key = crypto.randomBytes(24).toString('hex');
+  await writeApiKey(keyFile, key);
+  return key;
 }
 
 async function readKey(keyFile: string): Promise<string | null> {

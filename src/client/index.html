@@ -3,7 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap"
+    />
     <title>Earwitness</title>
+    <!-- No-flash theme boot (ported from Narratorr): apply the .dark class and a matching
+         background before first paint so a reload doesn't flash the wrong theme. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('theme');
+          if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          if (t === 'dark') document.documentElement.classList.add('dark');
+          document.documentElement.style.background = t === 'dark' ? 'hsl(30 8% 7%)' : 'hsl(30 10% 98%)';
+        } catch (e) {
+          /* localStorage blocked — fall back to the CSS default (light) */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

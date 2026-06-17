@@ -208,7 +208,7 @@ export class AttributionService {
   private validateDebugModels(input: DebugAttributeInput): void {
     const unsafe = (v: string): boolean => v.length > 200 || /\s/.test(v) || v.includes('..') || v.includes('://');
     const whisper = input.whisperModel?.trim();
-    if (whisper && whisper !== this.deps.whisperModel) {
+    if (whisper && whisper !== this.deps.whisper.model) {
       if (this.deps.transcribe.name === 'transformersjs') {
         if (!TRANSFORMERS_MODEL_ALIASES.includes(whisper)) throw new InvalidModelError('whisperModel', whisper);
       } else if (unsafe(whisper)) {
@@ -235,7 +235,7 @@ export class AttributionService {
     this.debugActive += 1;
     try {
       const book = await this.resolveOneBook(input.path);
-      const whisperModel = input.whisperModel?.trim() || this.deps.whisperModel;
+      const whisperModel = input.whisperModel?.trim() || this.deps.whisper.model;
       const ollamaModel = input.ollamaModel?.trim() || this.deps.ollama.model;
       const forceFresh = input.forceFresh !== false; // default true — debug must bypass caches
       const runsN = Math.min(Math.max(input.runs ?? 1, 1), 10);
@@ -246,7 +246,9 @@ export class AttributionService {
         const t0 = performance.now();
         const result = await processBook(book, {
           ...this.deps,
-          whisperModel,
+          // Fresh objects (not config.whisper / config.ollama) so a debug per-run override
+          // never mutates the live production config.
+          whisper: { model: whisperModel },
           ollama: { host: this.deps.ollama.host, model: ollamaModel },
           returnTimestamps: input.returnTimestamps,
           bypassCache: forceFresh,
@@ -296,7 +298,7 @@ export class AttributionService {
           tailSampling: this.deps.tailSampling !== false,
           returnTimestamps: input.returnTimestamps === true,
           forceFresh,
-          modelOverridden: whisperModel !== this.deps.whisperModel,
+          modelOverridden: whisperModel !== this.deps.whisper.model,
         },
         runs,
       };

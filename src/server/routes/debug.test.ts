@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { buildApp } from '../app.js';
-import { config } from '../config.js';
 import {
   DebugBusyError,
   InvalidModelError,
@@ -12,29 +11,22 @@ import type { ScanJobService } from '../services/scan-job.service.js';
 import type { AttributionService } from '../services/attribution.service.js';
 import type { DebugResult } from '@shared/schemas.js';
 
-// POST /api/debug/attribution is registered ONLY when EARWITNESS_DEBUG_ATTRIBUTION is on.
-// app.test.ts covers the off (404) case; here we enable it and verify the error→status
-// mapping + a success pass-through. The route exposes full transcripts, so its safety
-// behaviors (busy-shed 429, traversal 403) must not regress silently.
+// POST /api/debug/attribution is ALWAYS registered (v0.8.0 dropped the env flag). Here we
+// verify the error→status mapping + a success pass-through. The route exposes full
+// transcripts, so its safety behaviors (busy-shed 429, traversal 403) must not regress.
 
 const fakeScans = () =>
   ({ start: () => 'x', progress: () => null, results: async () => null, cancel: () => false }) as unknown as ScanJobService;
+const fakeTranscribe = () => ({ name: 'fake', transcribe: async () => '', setProvider() {} });
 
 function appWithDebug(debugAttribute: AttributionService['debugAttribute']) {
   const attribution = { attribute: async () => ({ detection: {} }), debugAttribute } as unknown as AttributionService;
-  return buildApp({ scans: fakeScans(), attribution, serveStatic: false });
+  return buildApp({ scans: fakeScans(), attribution, transcribe: fakeTranscribe(), serveStatic: false });
 }
 
 const post = (payload: Record<string, unknown>) => ({ method: 'POST' as const, url: '/api/debug/attribution', payload });
 
-beforeEach(() => {
-  config.debugAttribution = true;
-});
-afterEach(() => {
-  config.debugAttribution = false; // reset the singleton (app.test.ts asserts the off case)
-});
-
-describe('POST /api/debug/attribution (enabled)', () => {
+describe('POST /api/debug/attribution', () => {
   it('maps each debug error to its status code', async () => {
     const cases: Array<[Error, number]> = [
       [new InvalidModelError('whisperModel', 'evil/x'), 400],

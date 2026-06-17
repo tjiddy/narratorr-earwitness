@@ -5,22 +5,50 @@ import { Semaphore } from '../semaphore.js';
 
 export type WhisperBackend = 'transformersjs' | 'openai-compat' | 'whispercpp';
 
+/** A concurrency-limited provider whose underlying backend can be hot-swapped at runtime
+ *  (the Settings page changes Whisper backend/host without a restart). */
+export interface SwappableTranscribeProvider extends TranscribeProvider {
+  /** Replace the inner provider. The shared semaphore (and thus the concurrency cap) is
+   *  preserved across the swap; in-flight transcribes finish on the old provider. */
+  setProvider(provider: TranscribeProvider): void;
+}
+
 /**
  * Wrap a provider so at most `limit` transcribes run at once, process-wide. Book
  * concurrency stays parallel for tag-read/extract; only the heavy STT step is
  * gated. One shared instance enforces the cap across every concurrent book.
+ *
+ * `name` is a GETTER reading the current provider's name — the transcript cache key
+ * includes it, so swapping to a different BACKEND busts the cache (correct: different
+ * engine → different transcript), while a host-only swap (same backend name) reuses it.
  */
-export function withTranscribeLimit(provider: TranscribeProvider, limit: number): TranscribeProvider {
+export function withTranscribeLimit(provider: TranscribeProvider, limit: number): SwappableTranscribeProvider {
   const sem = new Semaphore(Math.max(1, limit));
+  let current = provider;
+  // Run a SPECIFIC provider through the shared semaphore (used by both transcribe + snapshot).
+  const runWith = async (p: TranscribeProvider, track: string, opts: Parameters<TranscribeProvider['transcribe']>[1]) => {
+    const release = await sem.acquire();
+    try {
+      return await p.transcribe(track, opts);
+    } finally {
+      release();
+    }
+  };
   return {
-    name: provider.name,
-    async transcribe(track, opts) {
-      const release = await sem.acquire();
-      try {
-        return await provider.transcribe(track, opts);
-      } finally {
-        release();
-      }
+    get name() {
+      return current.name;
+    },
+    setProvider(next: TranscribeProvider) {
+      current = next;
+    },
+    transcribe(track, opts) {
+      return runWith(current, track, opts);
+    },
+    // Capture `current` NOW; the returned pair stays bound to it even if a later setProvider
+    // swaps the backend — so a caller's cache key (name) and call (transcribe) can't diverge.
+    snapshot() {
+      const p = current;
+      return { name: p.name, transcribe: (track, opts) => runWith(p, track, opts) };
     },
   };
 }

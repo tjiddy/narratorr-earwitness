@@ -52,6 +52,10 @@ const envSchema = z.object({
   // overrides WHERE that key is stored (defaults to a sibling of the cache dir).
   BIND_HOST: z.string().default('0.0.0.0').transform((v) => v || '0.0.0.0'),
   EARWITNESS_API_KEY_FILE: z.string().optional(),
+  // Where the runtime-config overlay (Settings page writes) is persisted. Defaults to a
+  // sibling of the cache dir (i.e. /data in compose, ./.earwitness in dev), like the key
+  // file — only overrides the LOCATION, not whether the overlay exists.
+  EARWITNESS_CONFIG_FILE: z.string().optional(),
 
   BROWSE_ROOTS: z
     .string()
@@ -89,11 +93,6 @@ const envSchema = z.object({
   // transcribe the END of the file (Audible & co. put the credit there). Default on;
   // set false/0/no/off to disable (head-only, cheaper).
   TAIL_SAMPLING: z.string().optional(),
-
-  // Debug attribution console (POST /api/debug/attribution). OFF by default — when on
-  // it exposes full transcripts + internals + absolute paths to any API-key holder, and
-  // in-process model swaps can disrupt live attribution. Turn on to debug, off when done.
-  EARWITNESS_DEBUG_ATTRIBUTION: z.string().optional(),
 
   FFMPEG_PATH: z.string().optional(),
   CACHE_DIR: z.string().default('./.earwitness/cache').transform((v) => resolveFromRoot(v || './.earwitness/cache')),
@@ -146,8 +145,6 @@ export const config = {
   maxActiveScans: env.MAX_ACTIVE_SCANS,
   // Default on; only an explicit false/0/no/off disables it.
   tailSampling: !/^(false|0|no|off)$/i.test((env.TAIL_SAMPLING ?? '').trim()),
-  // Default OFF; only an explicit true/1/yes/on enables the debug console.
-  debugAttribution: /^(true|1|yes|on)$/i.test((env.EARWITNESS_DEBUG_ATTRIBUTION ?? '').trim()),
   ffmpegPath: env.FFMPEG_PATH ?? null,
   cacheDir: env.CACHE_DIR,
   reportsDir: env.REPORTS_DIR,
@@ -158,6 +155,11 @@ export const config = {
   apiKeyFile: env.EARWITNESS_API_KEY_FILE
     ? resolveFromRoot(env.EARWITNESS_API_KEY_FILE)
     : path.join(path.dirname(env.CACHE_DIR), 'api-key'),
+  // Runtime-config overlay file (Settings page). Sibling of the cache dir by default,
+  // like apiKeyFile — env supplies defaults, this JSON overlays the operator's edits.
+  configFile: env.EARWITNESS_CONFIG_FILE
+    ? resolveFromRoot(env.EARWITNESS_CONFIG_FILE)
+    : path.join(path.dirname(env.CACHE_DIR), 'config.json'),
 };
 
 export type AppConfig = typeof config;

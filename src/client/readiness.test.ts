@@ -13,7 +13,6 @@ function cfg(over: Partial<ConfigResponse> = {}): ConfigResponse {
     ollama: { host: null, model: 'qwen', reachable: true },
     whisper: { host: null, backend: 'openai-compat', model: 'large-v3-turbo', reachable: true },
     ffmpeg: { path: null, ok: true },
-    debugAttribution: false,
     ...over,
   };
 }

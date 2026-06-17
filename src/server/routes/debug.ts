@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { debugAttributionRequestSchema } from '@shared/schemas.js';
-import { config } from '../config.js';
 import {
   DebugBusyError,
   InvalidModelError,
@@ -12,18 +11,12 @@ import {
 import type { AttributionService } from '../services/attribution.service.js';
 
 // POST /api/debug/attribution — INTERNAL diagnostic console, NOT part of the narratorr
-// contract. Registered ONLY when EARWITNESS_DEBUG_ATTRIBUTION is on (otherwise the route
-// doesn't exist → 404). Still behind the normal /api auth (loopback or API key); since
-// it runs in the same container reachable only via the published port, loopback-only would
-// be unusable, so the env flag is the real guard — turn it OFF when you're done. The
-// response intentionally returns full transcripts + internals, so don't leave it exposed.
+// contract. Always registered (v0.8.0 dropped the EARWITNESS_DEBUG_ATTRIBUTION env flag —
+// "want to debug, just click"). It stays behind the normal /api auth (loopback or API
+// key), which is the guard on a trusted LAN. The response intentionally returns full
+// transcripts + internals, and request-supplied model overrides are allow-listed in the
+// service (validateDebugModels) so an arbitrary model can never be loaded from request input.
 export function registerDebugRoutes(app: FastifyInstance, attribution: AttributionService): void {
-  if (!config.debugAttribution) return;
-
-  app.log.warn(
-    'DEBUG attribution console ENABLED (POST /api/debug/attribution) — it exposes full transcripts + internals to any API-key holder. Disable EARWITNESS_DEBUG_ATTRIBUTION when done.',
-  );
-
   app.withTypeProvider<ZodTypeProvider>().post(
     '/api/debug/attribution',
     // No response schema — the debug payload is free-form (full transcripts + trace).

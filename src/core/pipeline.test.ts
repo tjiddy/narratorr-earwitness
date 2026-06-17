@@ -51,7 +51,7 @@ function freshDeps(provider: TranscribeProvider, over: Partial<ProcessDeps> = {}
     ffmpegPath: 'ffmpeg',
     offsetSeconds: 0,
     seconds: 60,
-    whisperModel: 'test-model',
+    whisper: { model: 'test-model' },
     ollama: { host: 'http://ollama.test', model: 'test-llm' },
     ...over,
   };
@@ -123,7 +123,7 @@ describe('processBook — extraction cache (P2-4)', () => {
       identity,
       offset: deps.offsetSeconds,
       seconds: deps.seconds,
-      model: deps.whisperModel,
+      model: deps.whisper.model,
       backend: deps.transcribe.name,
     });
     await deps.cache.set('transcript', tKey, transcript);
@@ -237,6 +237,39 @@ describe('processBook — cancellation & concurrency (P1-3, P1-2)', () => {
     await expect(
       processBook(await makeFileBook(), freshDeps(provider, { signal: controller.signal })),
     ).rejects.toThrow();
+  });
+
+  it('reads the whisper model BY REFERENCE — a live edit re-transcribes (cache key busts) (B2)', async () => {
+    // Settings mutates config.whisper.model in place; the pipeline must pick that up on the
+    // next run (not a snapshot) AND the transcript cache key must change with the model.
+    const transcript = 'Audible presents Dune by Frank Herbert.';
+    mockOllama({
+      attributionPresent: true,
+      title: 'Dune',
+      author: 'Frank Herbert',
+      narrator: null,
+      publisher: null,
+      confidence: 0.9,
+      evidence: { title: 'Dune', author: 'Frank Herbert', narrator: null },
+    });
+    const seenModels: string[] = [];
+    const provider: TranscribeProvider = {
+      name: 'fake',
+      transcribe: async (_track, opts) => {
+        seenModels.push(opts.model);
+        return transcript;
+      },
+    };
+    const whisper = { model: 'model-a' };
+    const deps = freshDeps(provider, { whisper }); // shares one cache across both runs
+    const book = await makeFileBook();
+
+    await processBook(book, deps);
+    whisper.model = 'model-b'; // live edit, as the Settings page does to config.whisper
+    await processBook(book, deps);
+
+    // A snapshot (or a cache key missing the model) would reuse model-a's transcript → ['model-a'].
+    expect(seenModels).toEqual(['model-a', 'model-b']);
   });
 
   it('caps concurrent transcribes via withTranscribeLimit', async () => {

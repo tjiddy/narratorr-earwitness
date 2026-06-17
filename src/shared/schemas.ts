@@ -7,3 +7,5 @@ export * from './schemas/browse.js';
 export * from './schemas/config.js';
 export * from './schemas/attribution.js';
 export * from './schemas/debug.js';
+export * from './schemas/settings.js';
+export * from './schemas/library.js';

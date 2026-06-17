@@ -16,7 +16,8 @@ const REMOTE = '203.0.113.7'; // documentation range — never loopback
 const fakeScans = () =>
   ({ start: () => 'x', progress: () => null, results: async () => null, cancel: () => false }) as unknown as ScanJobService;
 const fakeAttribution = () => ({ attribute: async () => ({ detection: {} }) }) as unknown as AttributionService;
-const build = () => buildApp({ scans: fakeScans(), attribution: fakeAttribution(), serveStatic: false });
+const fakeTranscribe = () => ({ name: 'fake', transcribe: async () => '', setProvider() {} });
+const build = () => buildApp({ scans: fakeScans(), attribution: fakeAttribution(), transcribe: fakeTranscribe(), serveStatic: false });
 
 afterEach(() => {
   config.apiKey = null; // reset the singleton so it doesn't leak into other suites
@@ -97,6 +98,47 @@ describe('registerAuth — /api/* network gate', () => {
     const app = await build();
     const res = await app.inject({ method: 'GET', url: '/api/v1/health', remoteAddress: '::ffff:127.0.0.1' });
     expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  // CSRF guard: an unknown-id cancel reaches the handler as 404 (fakeScans.cancel → false),
+  // so a 403 here can only come from the cross-origin guard, not the route itself.
+  it('403s a forged cross-origin write even from loopback (CSRF guard)', async () => {
+    config.apiKey = KEY;
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/scans/xyz/cancel',
+      remoteAddress: '127.0.0.1', // loopback → trusted, but the Origin is foreign
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('allows a same-origin write (Origin host matches Host) → reaches the handler', async () => {
+    config.apiKey = KEY;
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/scans/xyz/cancel',
+      remoteAddress: '127.0.0.1',
+      headers: { origin: 'http://localhost', host: 'localhost' },
+    });
+    expect(res.statusCode).toBe(404); // guard passed; handler says scan not found
+    await app.close();
+  });
+
+  it('allows a write with no Origin header (machine client like narratorr)', async () => {
+    config.apiKey = KEY;
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/scans/xyz/cancel',
+      remoteAddress: '203.0.113.7',
+      headers: { 'x-api-key': KEY }, // no Origin — server-to-server
+    });
+    expect(res.statusCode).toBe(404);
     await app.close();
   });
 

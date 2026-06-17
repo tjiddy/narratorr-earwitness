@@ -37,6 +37,29 @@ export function isTrustedRequest(req: FastifyRequest): boolean {
   return hasValidKey(req) || isLoopback(req.ip);
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * CSRF hardening (NOT human auth — that's deferred). Loopback is trusted without a key, so a
+ * malicious page open in a browser ON the server box could otherwise forge a state-changing
+ * request (e.g. rotate the key, or repoint the Whisper host at an exfil server) via a simple
+ * cross-origin POST. Browsers attach `Origin` to such requests, so we reject an unsafe method
+ * whose Origin is a real cross-origin browser origin. Same-origin (the UI this server serves)
+ * and the configured dev origin (vite :5173) are allowed; requests with NO Origin (narratorr,
+ * curl — non-browser machine clients) are unaffected.
+ */
+function isCrossOriginWrite(req: FastifyRequest): boolean {
+  if (SAFE_METHODS.has(req.method)) return false;
+  const origin = req.headers.origin;
+  if (!origin) return false; // non-browser client — no Origin header to forge with
+  if (origin === config.corsOrigin) return false; // configured dev origin
+  try {
+    return new URL(origin).host !== req.headers.host; // allow same-origin (host matches)
+  } catch {
+    return true; // malformed Origin → treat as cross-origin
+  }
+}
+
 /**
  * Gate /api/* on trust: loopback (local UI / debug console / host curl) passes, the
  * network must present the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`.
@@ -50,6 +73,10 @@ export function registerAuth(app: FastifyInstance): void {
     if (!req.url.startsWith('/api/')) return;
     if (!isTrustedRequest(req)) {
       return reply.code(401).send({ error: 'unauthorized' });
+    }
+    // Even for a trusted (e.g. loopback) caller, block a forged cross-origin write.
+    if (isCrossOriginWrite(req)) {
+      return reply.code(403).send({ error: 'cross-origin request rejected' });
     }
   });
 }

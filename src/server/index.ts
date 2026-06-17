@@ -5,6 +5,7 @@ import { createTranscribeProvider, withTranscribeLimit } from '@core/transcribe/
 import type { ProcessDeps } from '@core/pipeline.js';
 import { config } from './config.js';
 import { ensureApiKey } from './api-key.js';
+import { loadOverlay, applyOverlay } from './runtime-config.js';
 import { ScanJobService } from './services/scan-job.service.js';
 import { AttributionService } from './services/attribution.service.js';
 import { buildApp } from './app.js';
@@ -14,6 +15,11 @@ async function main(): Promise<void> {
   // config.apiKey is the single source auth reads; fill it in once at startup.
   const apiKey = await ensureApiKey(config.apiKeyFile);
   config.apiKey = apiKey.key;
+
+  // Apply the runtime-config overlay (Settings-page edits, persisted to config.json) over
+  // the env defaults BEFORE building anything from config.whisper / config.ollama, so a
+  // persisted backend/host/model is what actually boots.
+  applyOverlay(config, await loadOverlay(config.configFile));
 
   // ffmpeg is required for audio cutting; fall back to bare "ffmpeg" so the server
   // still boots and /api/config reports the problem rather than crashing.
@@ -34,7 +40,9 @@ async function main(): Promise<void> {
     ffmpegPath,
     offsetSeconds: config.introOffsetSeconds,
     seconds: config.introSeconds,
-    whisperModel: config.whisper.model,
+    // Reference (not config.whisper.model snapshot) so a Settings edit to the model applies
+    // live — see ProcessDeps.whisper. config.ollama is likewise shared by reference.
+    whisper: config.whisper,
     ollama: config.ollama,
     transcribeTimeoutMs: config.transcribeTimeoutMs,
     extractTimeoutMs: config.extractTimeoutMs,
@@ -54,7 +62,7 @@ async function main(): Promise<void> {
     maxActive: config.maxActiveScans,
   });
 
-  const app = await buildApp({ scans, attribution });
+  const app = await buildApp({ scans, attribution, transcribe });
   // Give the batch scanner the app's structured (pino) logger so its report-durability
   // warnings land in the same stream as everything else, not as orphan stdout lines.
   scans.setLogger(app.log);

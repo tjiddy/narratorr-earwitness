@@ -1,1 +1,11 @@
 @import 'tailwindcss';
+
+/* Shared narratorr design system (token layer + utilities). */
+@import './theme.css';
+
+/* App shell glue — keep design-system tokens in theme.css, not here. */
+html,
+body,
+#root {
+  min-height: 100%;
+}

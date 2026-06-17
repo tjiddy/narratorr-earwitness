@@ -21,7 +21,11 @@ export interface ProcessDeps {
   ffmpegPath: string;
   offsetSeconds: number;
   seconds: number;
-  whisperModel: string;
+  /** Whisper model, carried as a REFERENCE (not a snapshotted string) so a live edit via
+   *  the Settings page — which mutates config.whisper.model in place — is picked up by the
+   *  next transcribe without a restart. It also feeds the transcript cache key, so the key
+   *  changes when the model changes (correct: different model → different transcript). */
+  whisper: { model: string };
   ollama: { host: string; model: string };
   /** Job-level abort (cancellation). Combined with per-step timeouts below. */
   signal?: AbortSignal | undefined;
@@ -158,7 +162,7 @@ async function analyzeWindow(
     identity,
     offset: win.offset,
     seconds: win.seconds,
-    model: deps.whisperModel,
+    model: deps.whisper.model,
     backend: deps.transcribe.name,
   });
   let transcript = bypass ? null : await deps.cache.get<string>('transcript', tKey);
@@ -168,7 +172,7 @@ async function analyzeWindow(
       ffmpegPath: deps.ffmpegPath,
       offsetSeconds: win.offset,
       seconds: win.seconds,
-      model: deps.whisperModel,
+      model: deps.whisper.model,
       returnTimestamps: deps.returnTimestamps,
       signal: withTimeout(deps.signal, deps.transcribeTimeoutMs),
     });
@@ -296,7 +300,18 @@ async function analyzeWindow(
  * extraction are cached, so re-runs of unchanged files are cheap. Per-book errors are
  * captured into the result rather than thrown — one bad file shouldn't sink a whole scan.
  */
-export async function processBook(book: Book, deps: ProcessDeps): Promise<BookResult> {
+export async function processBook(book: Book, rawDeps: ProcessDeps): Promise<BookResult> {
+  // Snapshot the mutable runtime config (model names) + the transcribe backend ONCE per book.
+  // The Settings page can hot-swap the Whisper backend / model mid-run; without this snapshot
+  // the cache key (which embeds model + backend name) could be computed from one config and
+  // the actual transcribe/extract run against another across an await, mis-keying the cache.
+  // Live edits still apply to the NEXT book — each processBook call re-snapshots.
+  const deps: ProcessDeps = {
+    ...rawDeps,
+    whisper: { model: rawDeps.whisper.model },
+    ollama: { host: rawDeps.ollama.host, model: rawDeps.ollama.model },
+    transcribe: rawDeps.transcribe.snapshot?.() ?? rawDeps.transcribe,
+  };
   const base = {
     name: book.name,
     sourcePath: book.source,

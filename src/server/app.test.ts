@@ -18,10 +18,17 @@ function fakeScans(over: Partial<ScanJobService> = {}): ScanJobService {
 }
 
 function fakeAttribution(over: Partial<AttributionService> = {}): AttributionService {
-  return { attribute: async () => ({ detection: {} }), ...over } as unknown as AttributionService;
+  return {
+    attribute: async () => ({ detection: {} }),
+    debugAttribute: async () => ({ config: {}, runs: [] }),
+    ...over,
+  } as unknown as AttributionService;
 }
 
-const base = { scans: fakeScans(), attribution: fakeAttribution() };
+// The debug + settings routes need the (swappable) transcribe holder; a stub satisfies it.
+const fakeTranscribe = () => ({ name: 'fake', transcribe: async () => '', setProvider() {} });
+
+const base = { scans: fakeScans(), attribution: fakeAttribution(), transcribe: fakeTranscribe() };
 
 describe('buildApp', () => {
   it('returns 404 with the {error} envelope for a missing scan (P2-7)', async () => {
@@ -42,10 +49,10 @@ describe('buildApp', () => {
     await app.close();
   });
 
-  it('does not expose POST /api/debug/attribution unless explicitly enabled (404)', async () => {
+  it('always exposes POST /api/debug/attribution (v0.8.0 dropped the env flag)', async () => {
     const app = await buildApp({ ...base, serveStatic: false });
     const res = await app.inject({ method: 'POST', url: '/api/debug/attribution', payload: { path: 'x' } });
-    expect(res.statusCode).toBe(404); // EARWITNESS_DEBUG_ATTRIBUTION off by default → route not registered
+    expect(res.statusCode).toBe(200); // route is always registered now; the fake returns a debug result
     await app.close();
   });
 

@@ -38,7 +38,7 @@ for (const book of books.slice(0, limit)) {
     ffmpegPath,
     offsetSeconds: config.introOffsetSeconds,
     seconds: config.introSeconds,
-    whisperModel: config.whisper.model,
+    whisper: config.whisper,
     ollama: config.ollama,
   });
   console.log(`(${((Date.now() - t0) / 1000).toFixed(1)}s)`);

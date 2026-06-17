@@ -13,9 +13,11 @@ import type { AttributionService, AttributeResult } from '../services/attributio
 const fakeScans = () =>
   ({ start: () => 'x', progress: () => null, results: async () => null, cancel: () => false }) as unknown as ScanJobService;
 
+const fakeTranscribe = () => ({ name: 'fake', transcribe: async () => '', setProvider() {} });
+
 function appWith(attribute: AttributionService['attribute']) {
   const attribution = { attribute } as unknown as AttributionService;
-  return buildApp({ scans: fakeScans(), attribution, serveStatic: false });
+  return buildApp({ scans: fakeScans(), attribution, transcribe: fakeTranscribe(), serveStatic: false });
 }
 
 const detection: AttributeResult['detection'] = {

@@ -27,7 +27,7 @@ function makeService(over: Partial<ScanServiceDeps> = {}): { svc: ScanJobService
     ffmpegPath: 'ffmpeg',
     offsetSeconds: 0,
     seconds: 60,
-    whisperModel: 't',
+    whisper: { model: 't' },
     ollama: { host: 'http://x', model: 'm' },
     maxConcurrentBooks: 1,
     maxActiveScans: 4,

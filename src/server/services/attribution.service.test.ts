@@ -35,7 +35,7 @@ function makeDeps(over: Partial<AttributionServiceDeps>): AttributionServiceDeps
     ffmpegPath: 'ffmpeg',
     offsetSeconds: 0,
     seconds: 60,
-    whisperModel: 'm',
+    whisper: { model: 'm' },
     ollama: { host: 'http://ollama.test', model: 'm' },
     libraryRoot: '/nonexistent',
     maxActive: 4,
@@ -195,7 +195,7 @@ describe('AttributionService.debugAttribute', () => {
 
   it('flags a model override (which evicts the production model)', async () => {
     mockOllama();
-    const svc = new AttributionService(makeDeps({ libraryRoot: root, whisperModel: 'base.en', transcribe: stubTranscribe }));
+    const svc = new AttributionService(makeDeps({ libraryRoot: root, whisper: { model: 'base.en' }, transcribe: stubTranscribe }));
     const res = await svc.debugAttribute({ path: 'a.m4b', whisperModel: 'small.en' });
     expect(res.config.whisperModel).toBe('small.en');
     expect(res.config.modelOverridden).toBe(true);
@@ -222,7 +222,7 @@ describe('AttributionService.debugAttribute', () => {
   it('rejects an arbitrary HF-style whisperModel override on the transformersjs backend (no remote model load)', async () => {
     mockOllama();
     const svc = new AttributionService(
-      makeDeps({ libraryRoot: root, whisperModel: 'base.en', transcribe: { name: 'transformersjs', transcribe: async () => transcript } }),
+      makeDeps({ libraryRoot: root, whisper: { model: 'base.en' }, transcribe: { name: 'transformersjs', transcribe: async () => transcript } }),
     );
     await expect(
       svc.debugAttribute({ path: 'a.m4b', whisperModel: 'evil/backdoor-model' }),
@@ -232,7 +232,7 @@ describe('AttributionService.debugAttribute', () => {
   it('allows a known alias override on the transformersjs backend', async () => {
     mockOllama();
     const svc = new AttributionService(
-      makeDeps({ libraryRoot: root, whisperModel: 'base.en', transcribe: { name: 'transformersjs', transcribe: async () => transcript } }),
+      makeDeps({ libraryRoot: root, whisper: { model: 'base.en' }, transcribe: { name: 'transformersjs', transcribe: async () => transcript } }),
     );
     const res = await svc.debugAttribute({ path: 'a.m4b', whisperModel: 'small.en' });
     expect(res.config.whisperModel).toBe('small.en');

@@ -42,6 +42,13 @@ describe('buildApp', () => {
     await app.close();
   });
 
+  it('does not expose POST /api/debug/attribution unless explicitly enabled (404)', async () => {
+    const app = await buildApp({ ...base, serveStatic: false });
+    const res = await app.inject({ method: 'POST', url: '/api/debug/attribution', payload: { path: 'x' } });
+    expect(res.statusCode).toBe(404); // EARWITNESS_DEBUG_ATTRIBUTION off by default → route not registered
+    await app.close();
+  });
+
   describe('prod static serving (P1-1)', () => {
     let clientDir: string;
     beforeAll(async () => {

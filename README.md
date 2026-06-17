@@ -131,9 +131,9 @@ intentional gaps:
 - **CPU Whisper mangles proper nouns** (the exact author/narrator names we verify). Use a GPU
   `large-v3-turbo` service via `openai-compat` for production accuracy; `transformersjs`/`base.en`
   is the zero-infra fallback.
-- **Narratorr integration is contract-only** — the read/write shapes are documented in
-  [`src/shared/schemas/narratorr.ts`](src/shared/schemas/narratorr.ts); the client is wired later,
-  once Narratorr's endpoints exist.
+- **Narratorr integration is inbound** — Narratorr calls `POST /api/v1/attribution` (contract in
+  [`EARWITNESS-ATTRIBUTION-API-CONTRACT.md`](EARWITNESS-ATTRIBUTION-API-CONTRACT.md)); the earlier
+  earwitness-pulls-Narratorr client was dropped when the integration inverted.
 
 ## License
 

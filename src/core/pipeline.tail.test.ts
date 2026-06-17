@@ -8,10 +8,11 @@ import path from 'node:path';
 // leak into pipeline.test.ts.
 vi.mock('./tags.js', () => ({
   readTags: async () => ({ title: null, authors: [], narrators: [] }),
-  getAudioDuration: async () => 600, // 10 min → tail window at offset 540
+  getAudioDuration: vi.fn(async () => 600), // 10 min → tail window at offset 540 (overridable per-test)
 }));
 
 import { processBook, type ProcessDeps } from './pipeline.js';
+import { getAudioDuration } from './tags.js';
 import { Cache } from './cache.js';
 import type { Book } from './discover.js';
 import type { TranscribeProvider } from './transcribe/provider.js';
@@ -30,7 +31,7 @@ afterEach(() => vi.unstubAllGlobals());
 async function makeFileBook(): Promise<Book> {
   const p = path.join(tmp, `book-${counter++}.m4b`);
   await fs.writeFile(p, 'x');
-  return { name: path.parse(p).name, source: p, introTrackPath: p, introTrackReason: 'single file', tracks: [p], isMultifile: false };
+  return { name: path.parse(p).name, source: p, introTrackPath: p, introTrackReason: 'single file', tracks: [p] };
 }
 
 const HEAD = 'This is Audible. Chapter one. The cold wind rattled the windows that night.';
@@ -113,7 +114,7 @@ describe('processBook — tail sampling', () => {
     const f2 = path.join(dir, '02.m4b');
     await fs.writeFile(f1, 'x');
     await fs.writeFile(f2, 'x');
-    const book: Book = { name: 'Multi', source: dir, introTrackPath: f1, introTrackReason: 'first', tracks: [f1, f2], isMultifile: true };
+    const book: Book = { name: 'Multi', source: dir, introTrackPath: f1, introTrackReason: 'first', tracks: [f1, f2] };
 
     const calls: Array<{ track: string; offset: number }> = [];
     const provider: TranscribeProvider = {
@@ -165,5 +166,37 @@ describe('processBook — tail sampling', () => {
     expect(res.detected.authors).toEqual(['Christopher Moore']);
     // Head-only: one transcript fetch worth of extraction (no tail extraction call).
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+  });
+
+  it('skips the tail when the file duration is unknown (no second transcription)', async () => {
+    vi.mocked(getAudioDuration).mockResolvedValueOnce(null); // ffprobe couldn't read it
+    const offsets: number[] = [];
+    const provider: TranscribeProvider = {
+      name: 'fake',
+      transcribe: async (_t, opts) => {
+        offsets.push(opts.offsetSeconds);
+        return HEAD; // prose, no credit → head incomplete → tail would be attempted
+      },
+    };
+    mockOllamaByContent();
+    const res = await processBook(await makeFileBook(), deps({ transcribe: provider }));
+    expect(res.attributionPresent).toBe(false); // head had no credit, tail skipped
+    expect(offsets).toHaveLength(1); // only the head window was transcribed
+  });
+
+  it('skips the tail when a single file is too short for a non-overlapping tail window', async () => {
+    vi.mocked(getAudioDuration).mockResolvedValueOnce(60); // == head end (offset 0 + 60s) → no room
+    const offsets: number[] = [];
+    const provider: TranscribeProvider = {
+      name: 'fake',
+      transcribe: async (_t, opts) => {
+        offsets.push(opts.offsetSeconds);
+        return HEAD;
+      },
+    };
+    mockOllamaByContent();
+    const res = await processBook(await makeFileBook(), deps({ transcribe: provider }));
+    expect(res.attributionPresent).toBe(false);
+    expect(offsets).toHaveLength(1); // duration - seconds (0) not > headEnd (60) → tail skipped
   });
 });

@@ -3,7 +3,8 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { ReadinessBanner } from './components/ReadinessBanner';
 import { FolderPicker } from './components/FolderPicker';
 import { ResultsTable } from './components/ResultsTable';
-import { startScan, getScan, getResults, cancelScan } from './api';
+import { DebugConsole } from './components/DebugConsole';
+import { startScan, getScan, getResults, cancelScan, getConfig } from './api';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
@@ -17,7 +18,12 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export function App() {
+  const [view, setView] = useState<'scan' | 'debug'>('scan');
   const [scanId, setScanId] = useState<string | null>(null);
+  // The Debug tab only exists when the server has EARWITNESS_DEBUG_ATTRIBUTION on —
+  // otherwise the route 404s, so showing the tab would be a dead end.
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: getConfig });
+  const debugEnabled = configQuery.data?.debugAttribution ?? false;
   const start = useMutation({ mutationFn: startScan, onSuccess: setScanId });
   const cancel = useMutation({ mutationFn: cancelScan });
 
@@ -56,7 +62,7 @@ export function App() {
             <h1 className="text-2xl font-semibold tracking-tight">Earwitness</h1>
             <p className="text-sm text-neutral-500">Identify audiobooks by listening to the intro.</p>
           </div>
-          {scanId && (
+          {view === 'scan' && scanId && (
             <button
               className="text-sm text-neutral-400 hover:text-neutral-200"
               onClick={() => {
@@ -69,13 +75,29 @@ export function App() {
           )}
         </header>
 
+        {debugEnabled && (
+          <nav className="flex gap-2 border-b border-neutral-800 pb-2 text-sm">
+            {(['scan', 'debug'] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`rounded-md px-3 py-1 ${view === v ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-400 hover:text-neutral-200'}`}
+              >
+                {v === 'scan' ? 'Scan' : 'Debug'}
+              </button>
+            ))}
+          </nav>
+        )}
+
         <ReadinessBanner />
 
-        {start.error && <p className="text-sm text-rose-400">{String(start.error)}</p>}
+        {view === 'debug' && debugEnabled && <DebugConsole />}
 
-        {!scanId && <FolderPicker busy={start.isPending} onScan={(root) => start.mutate(root)} />}
+        {view === 'scan' && start.error && <p className="text-sm text-rose-400">{String(start.error)}</p>}
 
-        {scanId && data && (
+        {view === 'scan' && !scanId && <FolderPicker busy={start.isPending} onScan={(root) => start.mutate(root)} />}
+
+        {view === 'scan' && scanId && data && (
           <section className="space-y-4">
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
               <div className="flex items-center justify-between text-sm">
@@ -108,7 +130,7 @@ export function App() {
           </section>
         )}
 
-        {scanId && !data && <p className="text-sm text-neutral-500">Starting scan…</p>}
+        {view === 'scan' && scanId && !data && <p className="text-sm text-neutral-500">Starting scan…</p>}
       </div>
     </main>
   );

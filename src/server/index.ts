@@ -55,15 +55,18 @@ async function main(): Promise<void> {
   });
 
   const app = await buildApp({ scans, attribution });
+  // Give the batch scanner the app's structured (pino) logger so its report-durability
+  // warnings land in the same stream as everything else, not as orphan stdout lines.
+  scans.setLogger(app.log);
 
   await app.listen({ port: config.port, host: config.bindHost });
   app.log.info(`earwitness on ${config.bindHost}:${config.port} (mode=${config.mode}, whisper=${config.whisper.backend})`);
   app.log.info(`cache=${config.cacheDir} reports=${config.reportsDir}`);
 
   // Print the key on EVERY boot so it's always grep-able straight from the logs.
-  // Use warn, not info — the prod logger runs at level 'warn' (app.ts), so an info
-  // line would be silently dropped in the container. /api/* requires it from the
-  // network; loopback (local UI / curl) is trusted.
+  // Logged at 'warn' (not 'info') so it survives even if an operator lowers LOG_LEVEL
+  // to 'warn' for quiet operation — 'warn' is the safe floor (default level is 'info').
+  // /api/* requires the key from the network; loopback (local UI / curl) is trusted.
   if (apiKey.source === 'generated') {
     app.log.warn(`No API key found — generated one and saved it to ${apiKey.path}`);
   }

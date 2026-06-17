@@ -7,6 +7,7 @@ import { readTags, getAudioDuration } from './tags.js';
 import { AudioDecodeError } from './audio.js';
 import { compareAttribution, splitPeople } from './compare.js';
 import type { Logger } from './logger.js';
+import type { PipelineTrace, WindowTrace } from './trace.js';
 
 const MIN_TRANSCRIPT_CHARS = 15;
 const EXCERPT_CHARS = 400;
@@ -29,10 +30,19 @@ export interface ProcessDeps {
   /** Sample the file's TAIL when the head intro doesn't yield a complete attribution
    *  (Audible & co. put the credit at the end). Default on; set false to disable. */
   tailSampling?: boolean | undefined;
+  /** Forward to the transcribe backend (transformers.js): emit token timestamps for
+   *  reliable chunk stitching. Debug knob; default false. */
+  returnTimestamps?: boolean | undefined;
+  /** Debug: skip the transcript/extraction cache entirely (no read, no write) so a
+   *  re-run actually re-transcribes/re-extracts. Essential for model A/B + variance. */
+  bypassCache?: boolean | undefined;
   /** Optional request-scoped logger. When present, the pipeline narrates every step
    *  — transcript size + excerpt, raw extraction, evidence-guard nulling, final
    *  detection — so "why did it say X?" is answerable from the logs alone. */
   logger?: Logger | undefined;
+  /** Optional debug trace collector. When present, the pipeline records the full guts
+   *  of the run (full transcripts, raw extraction, guard nulling, window selection). */
+  trace?: PipelineTrace | undefined;
 }
 
 function emptyAttr(): Attribution {
@@ -120,13 +130,11 @@ function fieldScore(a: WindowAnalysis): number {
   return (a.detected.title ? 1 : 0) + (a.detected.authors.length ? 1 : 0) + (a.detected.narrators.length ? 1 : 0);
 }
 
-/** "Good enough to skip the tail": a title AND at least one person, all evidence-backed. */
+/** "Good enough to skip the tail": a title AND at least one person, all evidence-backed.
+ *  Derived from fieldScore (the single completeness rule): with a title present,
+ *  fieldScore >= 2 iff at least one author/narrator was also pinned down. */
 function isComplete(a: WindowAnalysis): boolean {
-  return (
-    a.attributionPresent &&
-    a.detected.title !== null &&
-    (a.detected.authors.length > 0 || a.detected.narrators.length > 0)
-  );
+  return a.attributionPresent && a.detected.title !== null && fieldScore(a) >= 2;
 }
 
 /**
@@ -141,6 +149,8 @@ async function analyzeWindow(
   win: { track: string; offset: number; seconds: number; label: 'head' | 'tail' },
 ): Promise<WindowAnalysis> {
   const log = deps.logger;
+  const bypass = deps.bypassCache === true;
+  const startedAt = performance.now();
   const identity = await fileIdentity(win.track);
 
   const tKey = transcriptKey({
@@ -151,33 +161,51 @@ async function analyzeWindow(
     model: deps.whisperModel,
     backend: deps.transcribe.name,
   });
-  let transcript = await deps.cache.get<string>('transcript', tKey);
-  const transcriptCached = transcript !== null;
+  let transcript = bypass ? null : await deps.cache.get<string>('transcript', tKey);
+  const cacheStatus: WindowTrace['cache'] = bypass ? 'bypass' : transcript !== null ? 'hit' : 'miss';
   if (transcript === null) {
     transcript = await deps.transcribe.transcribe(win.track, {
       ffmpegPath: deps.ffmpegPath,
       offsetSeconds: win.offset,
       seconds: win.seconds,
       model: deps.whisperModel,
+      returnTimestamps: deps.returnTimestamps,
       signal: withTimeout(deps.signal, deps.transcribeTimeoutMs),
     });
-    await deps.cache.set('transcript', tKey, transcript);
+    if (!bypass) await deps.cache.set('transcript', tKey, transcript);
   }
   const transcriptExcerpt = transcript.slice(0, EXCERPT_CHARS);
   log?.info(
-    { book: book.name, window: win.label, offset: Math.round(win.offset), cache: transcriptCached ? 'hit' : 'miss', chars: transcript.length, excerpt: transcript.slice(0, 200) },
+    { book: book.name, window: win.label, offset: Math.round(win.offset), cache: cacheStatus, chars: transcript.length, excerpt: transcript.slice(0, 200) },
     'pipeline: transcribed',
   );
   log?.debug({ book: book.name, window: win.label, transcript }, 'pipeline: full transcript');
 
-  const empty: WindowAnalysis = {
-    label: win.label,
-    transcript,
-    transcriptExcerpt,
-    attributionPresent: false,
-    detected: emptyAttr(),
-    confidence: 0,
-    evidence: emptyEvidence(),
+  // Push a trace record (debug only) for whichever exit we take.
+  const pushTrace = (
+    rawExtraction: WindowTrace['rawExtraction'],
+    evidence: WindowTrace['evidence'],
+    nulledByGuard: string[],
+    detected: Attribution,
+    attributionPresent: boolean,
+    confidence: number,
+  ): void => {
+    deps.trace?.windows.push({
+      label: win.label,
+      track: win.track,
+      offset: Math.round(win.offset),
+      seconds: win.seconds,
+      cache: cacheStatus,
+      chars: transcript!.length,
+      transcript: transcript!,
+      rawExtraction,
+      evidence,
+      nulledByGuard,
+      detected,
+      attributionPresent,
+      confidence,
+      ms: Math.round(performance.now() - startedAt),
+    });
   };
 
   // No usable speech in this window → empty detection (the caller may try the other window).
@@ -186,7 +214,8 @@ async function analyzeWindow(
       { book: book.name, window: win.label, chars: transcript.length },
       'pipeline: no usable speech in window → attributionPresent=false (silence/music, or credit is elsewhere)',
     );
-    return empty;
+    pushTrace(null, null, [], emptyAttr(), false, 0);
+    return { label: win.label, transcript, transcriptExcerpt, attributionPresent: false, detected: emptyAttr(), confidence: 0, evidence: emptyEvidence() };
   }
 
   // Extract (cached). Re-validate cached value against the schema so a stale or corrupt
@@ -197,19 +226,19 @@ async function analyzeWindow(
     promptVersion: PROMPT_VERSION,
     schemaVersion: SCHEMA_VERSION,
   });
-  const cached = await deps.cache.get<unknown>('extraction', eKey);
+  const cached = bypass ? null : await deps.cache.get<unknown>('extraction', eKey);
   const cachedValid = cached === null ? null : extractionSchema.safeParse(cached);
   let extraction = cachedValid && cachedValid.success ? cachedValid.data : null;
   const extractionCached = extraction !== null;
   if (extraction === null) {
     extraction = await extract(transcript, { ...deps.ollama, signal: withTimeout(deps.signal, deps.extractTimeoutMs) });
-    await deps.cache.set('extraction', eKey, extraction);
+    if (!bypass) await deps.cache.set('extraction', eKey, extraction);
   }
   log?.info(
     {
       book: book.name,
       window: win.label,
-      cache: extractionCached ? 'hit' : 'miss',
+      cache: bypass ? 'bypass' : extractionCached ? 'hit' : 'miss',
       raw: { title: extraction.title, author: extraction.author, narrator: extraction.narrator },
       confidence: extraction.confidence,
       attributionPresent: extraction.attributionPresent,
@@ -236,6 +265,15 @@ async function analyzeWindow(
   log?.info(
     { book: book.name, window: win.label, attributionPresent: verified.attributionPresent, detected, confidence: verified.confidence },
     'pipeline: window analysis complete',
+  );
+
+  pushTrace(
+    { title: extraction.title, author: extraction.author, narrator: extraction.narrator, confidence: extraction.confidence, attributionPresent: extraction.attributionPresent },
+    extraction.evidence,
+    nulled,
+    detected,
+    verified.attributionPresent,
+    verified.confidence,
   );
 
   return {
@@ -276,6 +314,16 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
 
     const headTrack = book.tracks[0] ?? book.introTrackPath;
     const tailTrack = book.tracks[book.tracks.length - 1] ?? book.introTrackPath;
+    if (deps.trace) {
+      deps.trace.book = {
+        name: book.name,
+        source: book.source,
+        introTrackPath: book.introTrackPath,
+        tracks: book.tracks,
+        firstTrack: headTrack,
+        lastTrack: tailTrack,
+      };
+    }
     if (book.tracks.length > 1) {
       log?.info(
         { book: book.name, tracks: book.tracks.length, first: headTrack, last: tailTrack, source: book.source },
@@ -298,6 +346,8 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
       seconds: deps.seconds,
       label: 'head',
     });
+    // Default trace selection (overwritten below if we actually sample the tail).
+    if (deps.trace) deps.trace.selection = { tailSampled: false, headScore: fieldScore(chosen), tailScore: 0, winner: 'head' };
 
     // Window 2 (lazy): the tail of the LAST track. A separate tail file is always new
     // audio; for a single-file book only sample the tail if it doesn't overlap the head.
@@ -319,6 +369,7 @@ export async function processBook(book: Book, deps: ProcessDeps): Promise<BookRe
           { book: book.name, headScore, tailScore, winner: tailWins ? 'tail' : 'head' },
           'pipeline: window selection',
         );
+        if (deps.trace) deps.trace.selection = { tailSampled: true, headScore, tailScore, winner: tailWins ? 'tail' : 'head' };
         if (tailWins) chosen = tail;
       } else {
         log?.info(

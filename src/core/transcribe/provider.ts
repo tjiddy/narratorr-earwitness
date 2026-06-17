@@ -7,6 +7,9 @@ export interface TranscribeOptions {
   seconds: number;
   model: string;
   signal?: AbortSignal | undefined;
+  /** transformers.js only: emit token timestamps so chunked (>30s) audio stitches its
+   *  overlapping windows reliably. Other backends ignore it. Default false. */
+  returnTimestamps?: boolean | undefined;
 }
 
 export interface TranscribeProvider {

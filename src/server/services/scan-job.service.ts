@@ -9,6 +9,7 @@ import {
 import { discover } from '@core/discover.js';
 import { processBook, type ProcessDeps } from '@core/pipeline.js';
 import type { ReportStore } from '@core/store.js';
+import type { Logger } from '@core/logger.js';
 
 // In-memory job tracker (mirrors Narratorr's MatchJobService): jobs live in a Map,
 // results accumulate on the job, and finished jobs are TTL-cleaned. The report
@@ -46,8 +47,15 @@ export class ScanCapacityError extends Error {
 
 export class ScanJobService {
   private readonly jobs = new Map<string, ScanJob>();
+  // Set once at startup (index.ts) to the app's pino logger. Scans can only start
+  // after the app is listening, so it's always present by the time run() logs.
+  private logger: Logger | null = null;
 
   constructor(private readonly deps: ScanServiceDeps) {}
+
+  setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
 
   private activeCount(): number {
     let active = 0;
@@ -93,12 +101,12 @@ export class ScanJobService {
       if (!report) return null;
       const parsed = scanResultsSchema.safeParse(report);
       if (!parsed.success) {
-        console.warn(`report ${id} on disk failed schema validation`);
+        this.logger?.warn({ scanId: id }, 'report on disk failed schema validation');
         return null;
       }
       return parsed.data;
     } catch (err) {
-      console.warn(`failed to read report ${id}:`, err);
+      this.logger?.warn({ scanId: id, err }, 'failed to read report');
       return null;
     }
   }
@@ -168,7 +176,7 @@ export class ScanJobService {
     } catch (err) {
       // A failed flush shouldn't kill the scan, but it must not be silent either —
       // it means the durable copy is stale.
-      console.warn(`failed to flush report ${job.id}:`, err);
+      this.logger?.warn({ scanId: job.id, err }, 'failed to flush report');
     }
   }
 

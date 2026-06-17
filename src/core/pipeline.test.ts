@@ -29,7 +29,6 @@ async function makeFileBook(): Promise<Book> {
     introTrackPath: p,
     introTrackReason: 'single file',
     tracks: [p],
-    isMultifile: false,
   };
 }
 

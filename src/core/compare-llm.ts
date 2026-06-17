@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  comparisonSchema,
   type Attribution,
   type Comparison,
   type FieldStatus,
@@ -57,6 +58,8 @@ export interface CompareDeps {
   model: string;
   cache: Cache;
   signal?: AbortSignal | undefined;
+  /** Debug: skip the comparison cache (no read, no write) so a re-run re-judges. */
+  bypassCache?: boolean | undefined;
 }
 
 function stripDiacritics(s: string): string {
@@ -214,8 +217,13 @@ export async function compareIdentity(
       '|',
     ),
   );
-  const cached = await deps.cache.get<Comparison>('comparison', key);
-  if (cached) return cached;
+  if (!deps.bypassCache) {
+    // Re-validate the cached value against the schema (like the extraction cache) so a
+    // stale/corrupt/hand-edited entry is treated as a miss instead of trusted blindly.
+    const cached = await deps.cache.get<unknown>('comparison', key);
+    const valid = cached === null ? null : comparisonSchema.safeParse(cached);
+    if (valid && valid.success) return valid.data;
+  }
 
   const llm = await callLlm(detected, expected, deps);
 
@@ -233,6 +241,6 @@ export async function compareIdentity(
     status: rollup([title.status, authors.status, narrators.status]),
     fields: { title, authors, narrators },
   };
-  await deps.cache.set('comparison', key, comparison);
+  if (!deps.bypassCache) await deps.cache.set('comparison', key, comparison);
   return comparison;
 }

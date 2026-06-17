@@ -1,4 +1,12 @@
-import type { BrowseResponse, ConfigResponse, ScanProgress, ScanResults } from '@shared/schemas.js';
+import type {
+  BrowseResponse,
+  ConfigResponse,
+  DebugResult,
+  DebugRun,
+  ScanProgress,
+  ScanResults,
+  WindowTrace,
+} from '@shared/schemas.js';
 
 // Surface the server's { error } envelope (all routes use it, incl. the normalized
 // 400/500 handler) instead of re-wrapping raw status text.
@@ -40,3 +48,29 @@ export const startScan = (root: string) =>
 
 export const cancelScan = (id: string) =>
   request<{ cancelled: boolean }>(`/api/scans/${id}/cancel`, { method: 'POST' });
+
+// --- debug console types (shared with the server via @shared/schemas/debug.ts, so
+// the client and server can never drift). Re-exported under the client's local names. ---
+export type DebugWindow = WindowTrace;
+export type DebugRunResult = DebugRun;
+export type { DebugResult };
+
+export interface DebugRequest {
+  path: string;
+  expected?: { title?: string; authors?: string[]; narrators?: string[] };
+  whisperModel?: string;
+  ollamaModel?: string;
+  returnTimestamps?: boolean;
+  forceFresh?: boolean;
+  runs?: number;
+}
+
+export const debugAttribution = (body: DebugRequest, apiKey: string) =>
+  request<DebugResult>('/api/debug/attribution', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+    },
+    body: JSON.stringify(body),
+  });

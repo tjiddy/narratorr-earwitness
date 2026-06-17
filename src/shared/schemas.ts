@@ -5,5 +5,5 @@ export * from './schemas/result.js';
 export * from './schemas/scan.js';
 export * from './schemas/browse.js';
 export * from './schemas/config.js';
-export * from './schemas/narratorr.js';
 export * from './schemas/attribution.js';
+export * from './schemas/debug.js';

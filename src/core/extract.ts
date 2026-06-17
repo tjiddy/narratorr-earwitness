@@ -4,14 +4,14 @@ import { sha } from './cache.js';
 
 // Bump when the PROMPT wording changes — it's part of the extraction cache key,
 // so old cached extractions are invalidated automatically.
-export const PROMPT_VERSION = 'v1';
+export const PROMPT_VERSION = 'v2';
 
 const SYSTEM_PROMPT = `You identify the audiobook from a transcript of its opening seconds.
 
-The opening often contains a publisher intro like "Audible presents TITLE by AUTHOR, narrated by NARRATOR". Extract title, author, narrator, and publisher from it.
+The opening often contains a publisher intro like "Audible presents TITLE by AUTHOR, narrated by NARRATOR". Extract the title, author, and narrator from it.
 
 Rules:
-- If the transcript is just story prose / contains NO publisher/title/author/narrator attribution, set "attributionPresent": false and leave title, author, narrator, publisher null. DO NOT infer them from the story content — guessing is worse than saying you don't know.
+- If the transcript is just story prose / contains NO publisher/title/author/narrator attribution, set "attributionPresent": false and leave title, author, narrator null. DO NOT infer them from the story content — guessing is worse than saying you don't know.
 - For every non-null field you DO fill, copy the exact verbatim words from the transcript that justify it into the matching "evidence" field. If you cannot point to the words, the field must be null.
 - "confidence" (0..1) reflects how clearly the attribution was stated. Lower it when audio is garbled or attribution is partial.
 - Author and narrator may list multiple people; join them naturally (e.g. "Jane Doe and John Roe").

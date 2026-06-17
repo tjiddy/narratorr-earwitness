@@ -3,7 +3,6 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { attributionRequestSchema, attributionResponseSchema, errorResponseSchema } from '@shared/schemas.js';
 import {
   AttributionCapacityError,
-  AmbiguousPathError,
   LibraryRootError,
   PathForbiddenError,
   PathNotFoundError,
@@ -60,7 +59,6 @@ export function registerAttributionRoutes(app: FastifyInstance, attribution: Att
         // Permanent (don't retry) → 4xx, no Retry-After.
         if (err instanceof PathForbiddenError) return reply.code(403).send({ error: err.message });
         if (err instanceof PathNotFoundError) return reply.code(404).send({ error: err.message });
-        if (err instanceof AmbiguousPathError) return reply.code(422).send({ error: err.message });
         if (err instanceof UnprocessableContentError) return reply.code(422).send({ error: err.message });
         throw err; // unknown → 500 via the app error handler
       }

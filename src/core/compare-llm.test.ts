@@ -167,4 +167,30 @@ describe('compareIdentity', () => {
 
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  // Error paths — mirror extract.test.ts. A comparable field (title here) forces the LLM
+  // call, so these exercise callLlm's three throws rather than the all-unknown short-circuit.
+  it('throws on a non-OK HTTP status from the compare LLM', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    await expect(
+      compareIdentity(detected({ title: 'Dune' }), expected({ title: 'Foundation' }), deps()),
+    ).rejects.toThrow(/compare 500/i);
+  });
+
+  it('throws when the compare LLM returns non-JSON content', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ message: { content: 'not json at all' } }), { status: 200 })),
+    );
+    await expect(
+      compareIdentity(detected({ title: 'Dune' }), expected({ title: 'Foundation' }), deps()),
+    ).rejects.toThrow(/non-JSON/i);
+  });
+
+  it('throws when the compare response does not match the schema', async () => {
+    stubLlm({ foo: 'bar' }); // valid JSON, wrong shape
+    await expect(
+      compareIdentity(detected({ title: 'Dune' }), expected({ title: 'Foundation' }), deps()),
+    ).rejects.toThrow(/schema/i);
+  });
 });

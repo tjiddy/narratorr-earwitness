@@ -3,7 +3,6 @@ import { buildApp } from '../app.js';
 import type { ScanJobService } from '../services/scan-job.service.js';
 import {
   AttributionCapacityError,
-  AmbiguousPathError,
   PathForbiddenError,
   PathNotFoundError,
   ProcessingError,
@@ -89,7 +88,6 @@ describe('POST /api/v1/attribution', () => {
     const cases: Array<[Error, number]> = [
       [new PathForbiddenError('p'), 403],
       [new PathNotFoundError('p'), 404],
-      [new AmbiguousPathError(2), 422], // ambiguous folder
       [new UnprocessableContentError('ffmpeg failed (1)'), 422], // undecodable audio
     ];
     for (const [err, code] of cases) {
@@ -104,20 +102,14 @@ describe('POST /api/v1/attribution', () => {
     }
   });
 
-  it('distinguishes the two 422 messages (undecodable vs ambiguous folder)', async () => {
+  it('surfaces the undecodable-audio 422 message', async () => {
     const undecodable = await appWith(async () => {
       throw new UnprocessableContentError('ffmpeg failed (1)');
     });
     const ru = await undecodable.inject(post({ path: 'x' }));
+    expect(ru.statusCode).toBe(422);
     expect(ru.json().error).toMatch(/unprocessable audio/i);
     await undecodable.close();
-
-    const ambiguous = await appWith(async () => {
-      throw new AmbiguousPathError(2);
-    });
-    const ra = await ambiguous.inject(post({ path: 'x' }));
-    expect(ra.json().error).toMatch(/folder with 2 distinct books/i);
-    await ambiguous.close();
   });
 
   it('503s with Retry-After on transient failures (retry me)', async () => {

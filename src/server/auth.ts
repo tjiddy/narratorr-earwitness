@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { config } from './config.js';
 
 // Network-exposure controls. earwitness always has a self-owned API key (generated +
@@ -11,13 +12,24 @@ function isLoopback(ip: string | undefined): boolean {
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('127.');
 }
 
+// Constant-time credential compare: hash both sides to a fixed length first so neither
+// the length nor an early-mismatch position leaks via timing. A plain `===` short-circuits
+// on the first differing byte and is a (theoretical) key-recovery oracle.
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
 export function hasValidKey(req: FastifyRequest): boolean {
   if (config.apiKey === null) return false;
   // Accept `Authorization: Bearer <key>` (the UI/our own clients) OR `X-Api-Key: <key>`
   // (narratorr's connector, and the convention across narratorr's own APIs).
-  return (
-    req.headers.authorization === `Bearer ${config.apiKey}` || req.headers['x-api-key'] === config.apiKey
-  );
+  const auth = req.headers.authorization;
+  const xApiKey = req.headers['x-api-key'];
+  if (typeof auth === 'string' && safeEqual(auth, `Bearer ${config.apiKey}`)) return true;
+  if (typeof xApiKey === 'string' && safeEqual(xApiKey, config.apiKey)) return true;
+  return false;
 }
 
 /** Trusted = authenticated with the API key, or connecting over loopback. */

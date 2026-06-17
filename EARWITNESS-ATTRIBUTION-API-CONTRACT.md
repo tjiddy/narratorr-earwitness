@@ -10,6 +10,7 @@
 **Amendment (post-sign-off, 2026-06-16 → v0.4.0):** added **`GET /api/v1/health`** — narratorr's Test Connection probe (#1526), which earwitness had never implemented because it was never in this contract. See changelog #7 and §2.
 **Amendment (post-sign-off, 2026-06-16 → v0.6.0):** detection now **samples the file's tail** as well as the head — Audible & co. put the spoken credit at the *end*, so head-only books were coming back `attributionPresent:false`. No wire change; materially better coverage. See changelog #8 and §4.
 **Amendment (post-sign-off, 2026-06-16 → v0.6.1):** the attribution path no longer runs the batch library-discovery on the submitted path — it resolves the path as **exactly one book** (multi-`.m4b` parts, titled chapters, and `Disc N/` subfolders all absorbed), fixing a false **`422`** on multi-file audiobooks. No wire change. See changelog #9 and §2.
+**Amendment (post-sign-off, 2026-06-16 → v0.7.0):** `AmbiguousPathError` and the ambiguous-folder **`422`** are **removed** from the code (already unreachable per #9). One path = one book; a true multi-book parent degrades to best-effort detection, never `422`. `422` now means exactly one thing: undecodable/unprocessable audio. No wire change. See changelog #10 and §2.
 
 ---
 
@@ -24,6 +25,7 @@
 7. **`GET /api/v1/health` added (amendment → v0.4.0).** narratorr's Test Connection (#1526) probes `GET /api/v1/health`; earwitness never implemented it because it was a narratorr-side decision that never landed in this contract, so the probe 404'd and narratorr reported "Unable to reach server." earwitness now serves it: `200 { ok, mode, version }`, gated by the same `/api/*` auth — so Test Connection validates the **key** too (wrong key → `401` → narratorr's "Invalid API key"). Liveness + identity only; dependency health stays in `/api/config`. See §2.
 8. **Tail-sampling (amendment → v0.6.0).** The first real production scan showed ~half the library returning `attributionPresent:false` because the spoken credit is at the **end** of the file (Audible's "this has been… narrated by…" outro), not the head intro. earwitness now transcribes the **tail** too when the head yields no complete attribution, and keeps whichever window heard more. Only unresolved books pay for a second transcription; cheap-path (credit up front) is unchanged. No wire change — `detection` shape is identical, just populated where it used to be empty. `TAIL_SAMPLING=false` disables it. See §4.
 9. **Multi-file books no longer false-`422` (amendment → v0.6.1).** The attribution path was running the batch library-discovery (`discover()`) on the submitted path, which treats every `.m4b` as its own book and splits loose files by name — so a single book shipped as N chapter files (a 49-`.m4b` set, multi-`.m4b` "parts", or `Disc 1/`+`Disc 2/`) was counted as N books and rejected with `422 "folder with N distinct books"`. Per §B.6 narratorr always sends one book's path, so earwitness now resolves it as **one book** — all audio under the path, head from the first track, tail credit from the **last** track — and never re-derives book boundaries. No wire change. If narratorr ever sends a true multi-book parent (a contract breach), earwitness degrades to a best-effort detection rather than erroring, and logs the track list (count + first/last/source) for debugging. `AmbiguousPathError`/`422` remains defined but is now unreachable on this path.
+10. **`AmbiguousPathError` removed (amendment → v0.7.0).** Changelog #9 left the class "defined but unreachable"; it — and its route branch + tests — are now **deleted**. Behaviour is unchanged from #9 (one path = one book; a multi-book parent → best-effort detection), but the `422 "folder with N distinct books"` response no longer exists anywhere in the code. `422` now means exactly one thing: undecodable/unprocessable audio. See §2.
 
 ---
 
@@ -259,7 +261,7 @@ earwitness will default toward a low-spec working set (Gemma-class ~2GB + Whispe
 3. **Multi-value detail** — **breakdown arrays** (`matched`/`missingExpected`/`unexpectedDetected`) + rollup `status`. ✅
 4. **`partial`** — earwitness reports `partial` + arrays; **narratorr decides** (consistent subset → no warning; contradiction → warning). ✅
 5. **Confidence** — **raw `confidence`**, no hidden threshold; evidence-guard stays; floor is narratorr policy. ✅
-6. **Ambiguous folders** — **`422`**, no guessing; narratorr always sends a single book's path. ✅
+6. **Ambiguous folders** — resolved to **ONE book** (no `422`); narratorr always sends a single book's path, and a multi-book parent degrades to best-effort detection. ✅
 
 ---
 

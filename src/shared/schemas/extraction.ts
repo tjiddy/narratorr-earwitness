@@ -9,7 +9,6 @@ export const extractionSchema = z.object({
   title: z.string().nullable(),
   author: z.string().nullable(),
   narrator: z.string().nullable(),
-  publisher: z.string().nullable(),
   confidence: z.number().min(0).max(1),
   evidence: z.object({
     title: z.string().nullable(),

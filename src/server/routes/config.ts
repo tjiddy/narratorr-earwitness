@@ -45,6 +45,7 @@ export function registerConfigRoutes(app: FastifyInstance): void {
           reachable: whisperReachable,
         },
         ffmpeg: { path: trusted ? ff.path : null, ok: ff.ok },
+        debugAttribution: config.debugAttribution,
       };
     },
   );

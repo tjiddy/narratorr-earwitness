@@ -78,3 +78,17 @@ export const attributionResponseSchema = z.object({
   comparison: comparisonSchema.optional(), // present only when `expected` was supplied
 });
 export type AttributionResponse = z.infer<typeof attributionResponseSchema>;
+
+// --- debug console (POST /api/debug/attribution) — NOT part of the narratorr contract ---
+// Internal diagnostic surface, gated behind EARWITNESS_DEBUG_ATTRIBUTION + the API key.
+// The response is a rich trace (returned as plain JSON, no strict response schema).
+export const debugAttributionRequestSchema = z.object({
+  path: z.string().min(1),
+  expected: attributionRequestSchema.shape.expected,
+  whisperModel: z.string().max(200).optional(), // override the STT model for this run (e.g. small.en)
+  ollamaModel: z.string().max(200).optional(), // override the extraction LLM
+  returnTimestamps: z.boolean().optional(), // transformers.js chunk-stitch knob
+  forceFresh: z.boolean().default(true), // bypass ALL caches (transcript/extraction/comparison)
+  runs: z.number().int().min(1).max(10).default(1), // run N times to eyeball (non-)determinism
+});
+export type DebugAttributionRequest = z.infer<typeof debugAttributionRequestSchema>;

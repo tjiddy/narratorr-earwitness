@@ -69,6 +69,23 @@ the `deploy.resources` block in `docker-compose.yml`) and/or run a real GPU Whis
 service and set `WHISPER_BACKEND=openai-compat` + `WHISPER_HOST` instead of the
 in-process fallback. The model services need `nvidia-container-toolkit` on the host.
 
+## Debugging an attribution miss
+
+`POST /api/debug/attribution` (and a **Debug** tab in the UI) runs the real pipeline
+against one file and returns the **full transcript + internal trace**, and can A/B Whisper
+models in-process. It is **OFF by default** and exposes raw transcripts + absolute paths to
+any API-key holder, so treat it as a temporary diagnostic, not a standing feature.
+
+- **Enable:** set `EARWITNESS_DEBUG_ATTRIBUTION=true` and **recreate** the container — the
+  flag is read at boot, so use `docker compose up -d --force-recreate earwitness` (NOT
+  `restart`/`exec`). The Debug tab appears once it's on (the UI reads the flag from `/api/config`).
+- **Model-override caveat:** a debug run that overrides the Whisper model shares the single
+  in-process model slot with production, so it **evicts the live model** — the next real
+  attribution pays a cold reload (~1.5 GB for large models). Debug is single-slot (one run
+  at a time) but still competes with production for the transcribe semaphore. Overrides are
+  allow-listed (known model names only) so a debug caller can't load an arbitrary remote model.
+- **Disable when done:** set it back to `false` (or unset) and recreate. Don't leave it on.
+
 ## Volumes
 
 - `earwitness-data` → `/data`: extraction/transcript cache (`/data/cache`), reports (`/data/reports`), and downloaded Whisper weights (`/data/models`).

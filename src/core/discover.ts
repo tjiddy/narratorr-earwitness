@@ -21,8 +21,7 @@ export interface Book {
   source: string; // file or directory representing the book
   introTrackPath: string;
   introTrackReason: string;
-  tracks: string[];
-  isMultifile: boolean;
+  tracks: string[]; // multi-file-ness is just tracks.length > 1 — don't denormalize it
 }
 
 const NUM = /(\d+)/;
@@ -78,7 +77,6 @@ function makeBook(source: string, name: string, tracks: string[], reason?: strin
     introTrackPath: tracks[0]!,
     introTrackReason: reason ?? (isMultifile ? `first of ${tracks.length} tracks (natural sort)` : 'single file'),
     tracks,
-    isMultifile,
   };
 }
 
@@ -208,9 +206,9 @@ export async function discover(root: string): Promise<Book[]> {
  * Resolve EXACTLY ONE book at a path — for the attribution endpoint, where narratorr
  * always sends a single book's path (contract sign-off §B.6). Unlike discover(), this
  * NEVER splits: a directory becomes one book containing ALL audio under it. That
- * absorbs the layouts discover()'s batch rules would over-split into a false
- * AmbiguousPathError — multiple `.m4b` "parts", titled loose chapters, and `Disc N/`
- * subfolders. Returns null when there's no audio at/under the path (caller → 404).
+ * absorbs the layouts discover()'s batch rules would over-split (the old false-422
+ * case) — multiple `.m4b` "parts", titled loose chapters, and `Disc N/` subfolders.
+ * Returns null when there's no audio at/under the path (caller → 404).
  *
  * We deliberately do NOT re-derive book boundaries here: narratorr owns layout, so
  * guessing is both wrong and unnecessary. If narratorr ever breaches the contract and

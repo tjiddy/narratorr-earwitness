@@ -29,6 +29,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   // disableRequestLogging: the Docker healthcheck hammers GET / every 30s, which at
   // info level would bury the attribution logs in noise. We log completions ourselves
   // below, but ONLY for /api/* — so health probes + static assets stay silent.
+  // NOTE: trustProxy is deliberately left UNSET. auth.ts trusts loopback via req.ip;
+  // with trustProxy off, req.ip is the real socket peer and X-Forwarded-For is ignored,
+  // so a spoofed XFF can't impersonate loopback. Do NOT enable trustProxy without
+  // revisiting isLoopback() — a co-located reverse proxy would make req.ip 127.0.0.1
+  // and turn the loopback bypass into a network-wide auth bypass.
   const app = Fastify({ logger: { level: config.logLevel }, disableRequestLogging: true }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);

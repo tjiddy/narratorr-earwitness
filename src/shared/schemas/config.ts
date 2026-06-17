@@ -16,6 +16,9 @@ export const configResponseSchema = z.object({
     reachable: z.boolean(),
   }),
   ffmpeg: z.object({ path: z.string().nullable(), ok: z.boolean() }),
+  // Whether POST /api/debug/attribution is live (EARWITNESS_DEBUG_ATTRIBUTION). Not a
+  // secret — it's documented in .env.example; the UI uses it to show/hide the Debug tab.
+  debugAttribution: z.boolean(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 

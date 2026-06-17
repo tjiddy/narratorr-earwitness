@@ -6,6 +6,7 @@ import { registerHealthRoutes } from './health.js';
 import { registerBrowseRoutes } from './browse.js';
 import { registerScanRoutes } from './scans.js';
 import { registerAttributionRoutes } from './attribution.js';
+import { registerDebugRoutes } from './debug.js';
 
 export function registerRoutes(
   app: FastifyInstance,
@@ -16,4 +17,5 @@ export function registerRoutes(
   registerBrowseRoutes(app);
   registerScanRoutes(app, deps.scans);
   registerAttributionRoutes(app, deps.attribution);
+  registerDebugRoutes(app, deps.attribution);
 }

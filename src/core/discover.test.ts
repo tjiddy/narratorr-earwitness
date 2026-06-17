@@ -50,8 +50,7 @@ describe('discover', () => {
     const books = await discover(root);
     const stand = books.find((b) => b.name === 'The Stand');
     expect(stand).toBeDefined();
-    expect(stand?.isMultifile).toBe(true);
-    expect(stand?.tracks).toHaveLength(3); // cover.jpg excluded
+    expect(stand?.tracks).toHaveLength(3); // cover.jpg excluded — multi-file (tracks > 1)
   });
 
   it('picks Chapter 1 as the intro track via natural sort (not Chapter 10)', async () => {
@@ -64,7 +63,7 @@ describe('discover', () => {
     const books = await discover(root);
     const it = books.find((b) => b.name === 'It');
     expect(it).toBeDefined();
-    expect(it?.isMultifile).toBe(false);
+    expect(it?.tracks).toHaveLength(1);
     expect(it?.introTrackReason).toBe('single file');
   });
 
@@ -73,7 +72,7 @@ describe('discover', () => {
     for (const title of ['Dune', 'Foundation', 'Neuromancer']) {
       const b = books.find((x) => x.name === title);
       expect(b, title).toBeDefined();
-      expect(b?.isMultifile).toBe(false);
+      expect(b?.tracks).toHaveLength(1);
     }
     // The coherent chapter series must still be ONE book, not split.
     expect(books.filter((b) => b.name === 'The Stand')).toHaveLength(1);
@@ -91,7 +90,6 @@ describe('resolveBookAt', () => {
     const b = await resolveBookAt(path.join(root, 'It.m4b'));
     expect(b).not.toBeNull();
     expect(b!.tracks).toHaveLength(1);
-    expect(b!.isMultifile).toBe(false);
   });
 
   it('folder of uniform chapters → ONE book, all tracks, intro = Chapter 1 (natural sort)', async () => {
@@ -103,7 +101,6 @@ describe('resolveBookAt', () => {
   it('folder of DISTINCT loose titles → ONE book (NOT split, unlike discover)', async () => {
     const b = await resolveBookAt(path.join(root, 'Loose'));
     expect(b!.tracks).toHaveLength(3);
-    expect(b!.isMultifile).toBe(true);
   });
 
   it('multiple .m4b "parts" → ONE book (the false-422 regression)', async () => {

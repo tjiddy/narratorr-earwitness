@@ -242,15 +242,18 @@ describe('processBook — cancellation & concurrency (P1-3, P1-2)', () => {
   it('reads the whisper model BY REFERENCE — a live edit re-transcribes (cache key busts) (B2)', async () => {
     // Settings mutates config.whisper.model in place; the pipeline must pick that up on the
     // next run (not a snapshot) AND the transcript cache key must change with the model.
-    const transcript = 'Audible presents Dune by Frank Herbert.';
+    // Complete credit (incl. narrator) so the head resolves fully and the stinger re-probe
+    // does NOT fire — this test is about the model busting the transcript cache key, one
+    // transcribe per run.
+    const transcript = 'Audible presents Dune by Frank Herbert, narrated by Scott Brick.';
     mockOllama({
       attributionPresent: true,
       title: 'Dune',
       author: 'Frank Herbert',
-      narrator: null,
+      narrator: 'Scott Brick',
       publisher: null,
       confidence: 0.9,
-      evidence: { title: 'Dune', author: 'Frank Herbert', narrator: null },
+      evidence: { title: 'Dune', author: 'Frank Herbert', narrator: 'Scott Brick' },
     });
     const seenModels: string[] = [];
     const provider: TranscribeProvider = {

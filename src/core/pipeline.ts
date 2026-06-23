@@ -6,11 +6,24 @@ import { extract, PROMPT_VERSION, SCHEMA_VERSION } from './extract.js';
 import { readTags, getAudioDuration } from './tags.js';
 import { AudioDecodeError } from './audio.js';
 import { compareAttribution, splitPeople } from './compare.js';
+import { resolveSelfNarration } from './self-narration.js';
 import type { Logger } from './logger.js';
 import type { PipelineTrace, WindowTrace } from './trace.js';
 
 const MIN_TRANSCRIPT_CHARS = 15;
 const EXCERPT_CHARS = 400;
+// A publisher logo sting at t=0 ("This is Audible." + chime) can spike faster-whisper's
+// no-speech detection and make it SUPPRESS the spoken credit that immediately follows it
+// in the same decode window — the head comes back abnormally short with no narrator. When
+// that happens we re-probe a few seconds in, past the sting, before paying for the tail.
+const STING_SKIP_SECONDS = 8;
+// Heuristic for "the head decode skipped the credit": a real 60s window of narration yields
+// ~700+ chars of speech (HP head measured 697). The stinger bug leaves the head SPARSE — the
+// chime makes faster-whisper jump past the credit to clear narration (Beware of Chicken's
+// suppressed head measured 393). Below this we re-probe past the sting. (A genuinely full head
+// that simply lacks a narrator — e.g. Listening Library, narrator never announced — stays above
+// it and isn't re-probed, since re-probing wouldn't find a credit that isn't spoken.)
+const SUPPRESSED_HEAD_CHARS = 600;
 // When a detected field can't be backed by a transcript-grounded evidence span,
 // we null it and cap confidence here — "we think we heard it but can't prove it".
 const UNVERIFIED_CONFIDENCE_CAP = 0.4;
@@ -134,11 +147,12 @@ function fieldScore(a: WindowAnalysis): number {
   return (a.detected.title ? 1 : 0) + (a.detected.authors.length ? 1 : 0) + (a.detected.narrators.length ? 1 : 0);
 }
 
-/** "Good enough to skip the tail": a title AND at least one person, all evidence-backed.
- *  Derived from fieldScore (the single completeness rule): with a title present,
- *  fieldScore >= 2 iff at least one author/narrator was also pinned down. */
+/** "Good enough to skip the tail": a title AND a NARRATOR, both evidence-backed. The tail
+ *  exists to catch the narrator credit (Audible & co. put it at the end), so a head with a
+ *  title+author but no narrator is NOT complete — it must still sample the tail. (Author
+ *  alone used to satisfy this via fieldScore>=2, which silently dropped tail-only narrators.) */
 function isComplete(a: WindowAnalysis): boolean {
-  return a.attributionPresent && a.detected.title !== null && fieldScore(a) >= 2;
+  return a.attributionPresent && a.detected.title !== null && a.detected.narrators.length > 0;
 }
 
 /**
@@ -261,11 +275,20 @@ async function analyzeWindow(
     );
   }
 
-  const detected = {
+  const rawDetected = {
     title: verified.title,
     authors: splitPeople(verified.author),
     narrators: splitPeople(verified.narrator),
   };
+  // Deterministically resolve role-word narrators ("read by the author") to the detected author(s)
+  // BEFORE comparison — the sighted LLM judge resolves this only intermittently (see self-narration.ts).
+  const detected = resolveSelfNarration(rawDetected);
+  if (detected.narrators.join('|') !== rawDetected.narrators.join('|')) {
+    log?.info(
+      { book: book.name, window: win.label, from: rawDetected.narrators, to: detected.narrators },
+      'pipeline: resolved self-narration (role → author name)',
+    );
+  }
   log?.info(
     { book: book.name, window: win.label, attributionPresent: verified.attributionPresent, detected, confidence: verified.confidence },
     'pipeline: window analysis complete',
@@ -363,6 +386,34 @@ export async function processBook(book: Book, rawDeps: ProcessDeps): Promise<Boo
     });
     // Default trace selection (overwritten below if we actually sample the tail).
     if (deps.trace) deps.trace.selection = { tailSampled: false, headScore: fieldScore(chosen), tailScore: 0, winner: 'head' };
+
+    // Window 1b (stinger re-probe): if the head didn't fully resolve AND its transcript is
+    // abnormally short, the publisher logo sting likely suppressed the credit. Re-seek a few
+    // seconds in — past the sting — and keep it if it heard more. Cheap insurance against the
+    // "This is Audible." decode-suppression bug (faster-whisper bails after the chime).
+    if (
+      !isComplete(chosen) &&
+      chosen.transcript.replace(/\s/g, '').length < SUPPRESSED_HEAD_CHARS &&
+      deps.offsetSeconds === 0
+    ) {
+      log?.info(
+        { book: book.name, headChars: chosen.transcript.length, reprobeOffset: STING_SKIP_SECONDS },
+        'pipeline: head short/incomplete → re-probing past the intro sting',
+      );
+      const head2 = await analyzeWindow(book, deps, {
+        track: headTrack,
+        offset: STING_SKIP_SECONDS,
+        seconds: deps.seconds,
+        label: 'head',
+      });
+      if (
+        fieldScore(head2) > fieldScore(chosen) ||
+        (fieldScore(head2) === fieldScore(chosen) && head2.attributionPresent && !chosen.attributionPresent)
+      ) {
+        chosen = head2;
+        if (deps.trace) deps.trace.selection = { tailSampled: false, headScore: fieldScore(chosen), tailScore: 0, winner: 'head' };
+      }
+    }
 
     // Window 2 (lazy): the tail of the LAST track. A separate tail file is always new
     // audio; for a single-file book only sample the tail if it doesn't overlap the head.

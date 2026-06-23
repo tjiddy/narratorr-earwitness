@@ -168,6 +168,33 @@ describe('processBook — tail sampling', () => {
     expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
   });
 
+  it('samples the tail when the head has title+author but NO narrator (narrator is tail-only)', async () => {
+    // The exact production bug: a head with title+author used to satisfy isComplete (fieldScore>=2)
+    // and skip the tail, silently dropping a narrator that's only credited at the end. After the
+    // fix isComplete requires a narrator, so the tail is sampled and its full credit wins.
+    const HEAD2 = 'Recorded Books presents Fool by Christopher Moore. Chapter one.';
+    const TAIL2 = 'This has been Fool, written by Christopher Moore, narrated by Euan Morton.';
+    const provider: TranscribeProvider = {
+      name: 'fake',
+      transcribe: async (_t, opts) => (opts.offsetSeconds >= 100 ? TAIL2 : HEAD2),
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const hasNarr = body.includes('Euan Morton'); // only the tail transcript carries the narrator
+        const extraction = hasNarr
+          ? { attributionPresent: true, title: 'Fool', author: 'Christopher Moore', narrator: 'Euan Morton', publisher: null, confidence: 0.95, evidence: { title: 'Fool', author: 'Christopher Moore', narrator: 'Euan Morton' } }
+          : { attributionPresent: true, title: 'Fool', author: 'Christopher Moore', narrator: null, publisher: null, confidence: 0.9, evidence: { title: 'Fool', author: 'Christopher Moore', narrator: null } };
+        return new Response(JSON.stringify({ message: { content: JSON.stringify(extraction) } }), { status: 200 });
+      }),
+    );
+    const res = await processBook(await makeFileBook(), deps({ transcribe: provider }));
+    expect(res.detected.title).toBe('Fool');
+    expect(res.detected.narrators).toEqual(['Euan Morton']); // recovered from the tail
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2); // head + tail extraction
+  });
+
   it('skips the tail when the file duration is unknown (no second transcription)', async () => {
     vi.mocked(getAudioDuration).mockResolvedValueOnce(null); // ffprobe couldn't read it
     const offsets: number[] = [];
@@ -181,7 +208,9 @@ describe('processBook — tail sampling', () => {
     mockOllamaByContent();
     const res = await processBook(await makeFileBook(), deps({ transcribe: provider }));
     expect(res.attributionPresent).toBe(false); // head had no credit, tail skipped
-    expect(offsets).toHaveLength(1); // only the head window was transcribed
+    // head@0 + the stinger re-probe@8 fire (head was short & incomplete); the TAIL is still
+    // skipped because the duration is unknown — no high (tail) offset was sampled.
+    expect(offsets).toEqual([0, STING_SKIP_SECONDS]);
   });
 
   it('skips the tail when a single file is too short for a non-overlapping tail window', async () => {
@@ -197,6 +226,35 @@ describe('processBook — tail sampling', () => {
     mockOllamaByContent();
     const res = await processBook(await makeFileBook(), deps({ transcribe: provider }));
     expect(res.attributionPresent).toBe(false);
-    expect(offsets).toHaveLength(1); // duration - seconds (0) not > headEnd (60) → tail skipped
+    // head@0 + stinger re-probe@8; tail skipped (duration - seconds not > headEnd).
+    expect(offsets).toEqual([0, STING_SKIP_SECONDS]);
+  });
+
+  it('re-probes past the intro sting when the head decode is suppressed (the "This is Audible" bug)', async () => {
+    // offset 0 → faster-whisper bailed right after the logo sting: a short transcript with no
+    // credit. offset 8 → the real spoken credit, which the re-probe recovers. Mirrors the live
+    // Beware of Chicken case (offset 0 → "This is Audible."; offset 5+ → "performed by …").
+    const STUNG = 'This is Audible. The cold wind rattled the windows that night.'; // short, no credit
+    const CREDIT = 'Podium Audio presents Beware of Chicken, written by Casualfarmer, performed by Travis Baldree. Chapter one.';
+    const provider: TranscribeProvider = {
+      name: 'fake',
+      transcribe: async (_t, opts) => (opts.offsetSeconds >= STING_SKIP_SECONDS ? CREDIT : STUNG),
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const hasCredit = body.includes('Travis Baldree');
+        const extraction = hasCredit
+          ? { attributionPresent: true, title: 'Beware of Chicken', author: 'Casualfarmer', narrator: 'Travis Baldree', publisher: null, confidence: 0.95, evidence: { title: 'Beware of Chicken', author: 'Casualfarmer', narrator: 'Travis Baldree' } }
+          : { attributionPresent: false, title: null, author: null, narrator: null, publisher: null, confidence: 0, evidence: { title: null, author: null, narrator: null } };
+        return new Response(JSON.stringify({ message: { content: JSON.stringify(extraction) } }), { status: 200 });
+      }),
+    );
+    const res = await processBook(await makeFileBook(), deps({ transcribe: provider }));
+    expect(res.detected.title).toBe('Beware of Chicken');
+    expect(res.detected.narrators).toEqual(['Travis Baldree']); // recovered past the sting
   });
 });
+
+const STING_SKIP_SECONDS = 8; // mirrors src/core/pipeline.ts

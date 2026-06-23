@@ -20,17 +20,17 @@ import { sha, type Cache } from './cache.js';
 // reference a real input string is dropped (anti-hallucination).
 
 // Bump when the prompt wording changes — part of the comparison cache key.
-export const COMPARE_PROMPT_VERSION = 'v1';
+export const COMPARE_PROMPT_VERSION = 'v2';
 
-const SYSTEM_PROMPT = `You compare two attributions for an audiobook: what was HEARD in the opening audio ("detected") and what the library currently believes ("expected"). For each field decide whether they refer to the SAME work / the SAME people.
+const SYSTEM_PROMPT = `You compare two attributions for an audiobook. "detected" is what a SPEECH-TO-TEXT system HEARD in the spoken audio credit; "expected" is what the library catalog believes. For each field decide whether they refer to the SAME work / SAME people.
 
-Judge IDENTITY, not spelling. The goal is "is this the same book/person?", not "is the metadata string-perfect."
+Critical context: "detected" came from speech-to-text, which routinely MANGLES the spelling of proper nouns — narrator and author names especially. So the real question per name is: is HEARD a plausible MISHEARING or spelling/formatting variant of EXPECTED (the same real person)? Judge that, not whether the strings match.
 
 Rules:
-- Treat as the SAME when the only differences are formatting, ordering, punctuation, honorifics, initials/abbreviations, transliteration, "read by" vs "narrated by", or a well-known alternate / former / stage name of the same real person. Examples: "King, Stephen" = "Stephen King"; "John Ham" = "John Hamm"; "Ron Artest" = "Metta World Peace".
-- Treat as DIFFERENT when the names plausibly refer to different people or different works. Do NOT invent a connection to force a match. If you are unsure whether two names are the same person, treat them as DIFFERENT.
-- For "authors" and "narrators": return the pairs you judge to be the same person, as { "expected": <verbatim from the expected list>, "detected": <verbatim from the detected list> }. Copy the strings EXACTLY from the provided lists. Pair each name at most once. Do not output a pair unless both strings appear in the lists.
-- For "title": { "same": true | false } — whether detected and expected name the same work.
+- Pair a detected name with an expected name when detected is a plausible speech-to-text mishearing, homophone, transliteration, or formatting/ordering/initials/honorific variant of the SAME real person. Speech-to-text confusions to treat as the SAME person include: Brick/Brink, Euan/Ewan, Suzy/Susie, Stephen/Steven, Maarleveld/Marleveld, "Khristine Hvam"/"Christine Vam", "John Ham"/"John Hamm", "King, Stephen"/"Stephen King". Also pair a well-known alternate/former/stage name of the same real person (e.g. "Ron Artest"/"Metta World Peace").
+- Do NOT pair two names that refer to GENUINELY DIFFERENT people. If detected has a different first name AND a different surname with no phonetic overlap — e.g. "Kevin R. Free" vs "David Kwee", or "Marc Thompson" vs "Kevin Thompson" — they are DIFFERENT people; leave them UNPAIRED even if that means nothing matches. NEVER invent a connection to force a match. When genuinely unsure, leave UNPAIRED.
+- For "authors" and "narrators": return ONLY the pairs you judge to be the same person, as { "expected": <verbatim from the expected list>, "detected": <verbatim from the detected list> }. Copy the strings EXACTLY from the provided lists. Pair each name at most once. Never output a pair unless both strings appear in the lists.
+- For "title": { "same": true | false } — whether detected and expected name the same work. Ignore subtitle, series, volume, and edition wording (e.g. "Dune" == "Dune: Book One of the Dune Chronicles").
 - "reason": one short human-readable sentence per field. It is for display only.
 - Respond ONLY with JSON matching the schema.`;
 

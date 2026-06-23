@@ -27,6 +27,26 @@ function stubLlm(out: unknown): ReturnType<typeof vi.fn> {
   return fn;
 }
 
+// Route the main set-partition call vs the single-pair recovery calls (bug #4). The pair
+// call's user content is `{ expected, heard }` (both strings); the main call's is
+// `{ detected, expected }`. `pair(expected, heard)` decides each leftover-pair verdict.
+function stubRouted(main: unknown, pair: (expected: string, heard: string) => boolean): ReturnType<typeof vi.fn> {
+  const fn = vi.fn(async (_url: string, init: { body: string }) => {
+    const body = JSON.parse(init.body) as { messages: { role: string; content: string }[] };
+    const user = JSON.parse(body.messages.find((m) => m.role === 'user')!.content) as Record<string, unknown>;
+    const out =
+      typeof user.heard === 'string' && typeof user.expected === 'string'
+        ? { same: pair(user.expected, user.heard), reason: 'pairwise' }
+        : main;
+    return new Response(JSON.stringify({ message: { content: JSON.stringify(out) } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  vi.stubGlobal('fetch', fn);
+  return fn;
+}
+
 const deps = () => ({ host: 'http://ollama.test', model: 'm', cache: memCache() });
 
 const detected = (over: Partial<Attribution> = {}): Attribution => ({
@@ -79,6 +99,54 @@ describe('compareIdentity', () => {
     expect(cmp.fields.narrators.status).toBe('mismatch');
     expect(cmp.fields.narrators.unexpectedDetected).toEqual(['Jose Bautista']);
     expect(cmp.fields.narrators.missingExpected).toEqual(['Ray Porter']);
+  });
+
+  it('recovers multi-name pairs the one-shot matcher under-paired (bug #4)', async () => {
+    // The Divorce: the set-partition call pairs only Marin Ireland and drops the two
+    // obvious mishearings. Pairwise recovery re-judges the leftovers and recovers them →
+    // a full match, not a false mismatch.
+    const fn = stubRouted(
+      {
+        title: { same: true, reason: 'same' },
+        authors: { matches: [{ expected: 'Freida McFadden', detected: 'Frida McFadden' }], reason: 'mishearing' },
+        narrators: { matches: [{ expected: 'Marin Ireland', detected: 'Marin Ireland' }], reason: 'one only' },
+      },
+      (exp, heard) =>
+        (exp === 'January LaVoy' && heard === 'January Lavoie') ||
+        (exp === 'Edoardo Ballerini' && heard === 'Eduardo Ballerini'),
+    );
+
+    const cmp = await compareIdentity(
+      detected({ title: 'The Divorce', authors: ['Frida McFadden'], narrators: ['January Lavoie', 'Marin Ireland', 'Eduardo Ballerini'] }),
+      expected({ title: 'The Divorce', authors: ['Freida McFadden'], narrators: ['January LaVoy', 'Edoardo Ballerini', 'Marin Ireland'] }),
+      deps(),
+    );
+
+    expect(cmp.fields.narrators.status).toBe('match');
+    expect(cmp.fields.narrators.matched).toHaveLength(3);
+    expect(cmp.fields.narrators.missingExpected).toEqual([]);
+    expect(cmp.fields.narrators.unexpectedDetected).toEqual([]);
+    expect(cmp.status).toBe('match');
+    expect(fn.mock.calls.length).toBeGreaterThan(1); // main call + pairwise recovery calls
+  });
+
+  it('recovery never over-pairs genuinely different leftover names (cardinal-sin guard)', async () => {
+    // Set-partition pairs nobody; pairwise recovery is asked and says NOT the same person.
+    // The contradiction must survive — recovery only absorbs real mishearings.
+    stubRouted(
+      { title: { same: true, reason: 'same' }, authors: { matches: [], reason: 'n/a' }, narrators: { matches: [], reason: 'different' } },
+      () => false,
+    );
+
+    const cmp = await compareIdentity(
+      detected({ title: 'Murderbot', narrators: ['David Kwee'] }),
+      expected({ title: 'Murderbot', narrators: ['Kevin R. Free'] }),
+      deps(),
+    );
+
+    expect(cmp.fields.narrators.status).toBe('mismatch');
+    expect(cmp.fields.narrators.matched).toEqual([]);
+    expect(cmp.fields.narrators.unexpectedDetected).toEqual(['David Kwee']);
   });
 
   it('treats a consistent subset as partial, not a mismatch', async () => {

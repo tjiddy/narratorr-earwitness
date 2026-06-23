@@ -19,8 +19,9 @@ import { sha, type Cache } from './cache.js';
 // computed deterministically in code from its pairings, and any pairing that doesn't
 // reference a real input string is dropped (anti-hallucination).
 
-// Bump when the prompt wording changes — part of the comparison cache key.
-export const COMPARE_PROMPT_VERSION = 'v2';
+// Bump when the prompt wording OR the comparison behavior changes — part of the cache key.
+// v3: pairwise leftover recovery (bug #4 — the one-shot matcher under-pairs multi-name lists).
+export const COMPARE_PROMPT_VERSION = 'v3';
 
 const SYSTEM_PROMPT = `You compare two attributions for an audiobook. "detected" is what a SPEECH-TO-TEXT system HEARD in the spoken audio credit; "expected" is what the library catalog believes. For each field decide whether they refer to the SAME work / SAME people.
 
@@ -41,6 +42,14 @@ const llmSchema = z.object({
   narrators: z.object({ matches: z.array(matchPairSchema), reason: z.string() }),
 });
 type LlmComparison = z.infer<typeof llmSchema>;
+
+// Bug #4 recovery: judging ONE expected/heard pair at a time is far more reliable than
+// asking the model to emit the whole set-partition in one shot (which silently drops
+// obvious mishearings on multi-name lists — e.g. it pairs "Marin Ireland" but not
+// "Edoardo Ballerini"/"Eduardo Ballerini"). Same framing/guardrails as the main prompt.
+const PAIR_PROMPT = `A speech-to-text system transcribed a spoken audiobook credit; proper nouns — names especially — are routinely MANGLED. Given one EXPECTED name (from the catalog) and one HEARD name (from speech-to-text), decide: is HEARD a plausible mishearing, homophone, transliteration, or formatting/ordering/initials/honorific variant of EXPECTED — i.e. the SAME real person? Examples of SAME: Brick/Brink, Euan/Ewan, Stephen/Steven, "January LaVoy"/"January Lavoie", "Edoardo Ballerini"/"Eduardo Ballerini", "John Ham"/"John Hamm". If HEARD has a different first name AND a different surname with no phonetic overlap, they are DIFFERENT people. When genuinely unsure, answer false. Respond ONLY with JSON.`;
+const pairSchema = z.object({ same: z.boolean(), reason: z.string() });
+const pairJsonSchema = z.toJSONSchema(pairSchema);
 
 const jsonSchema = z.toJSONSchema(llmSchema);
 // Derived from the JSON schema so any shape change invalidates the comparison cache.
@@ -186,6 +195,75 @@ async function callLlm(detected: Attribution, expected: Expected, deps: CompareD
 }
 
 /**
+ * Judge a single (expected, heard) name pair — are they the same real person, allowing
+ * for speech-to-text mangling? Cached on (names, model, version) so a pair is judged once
+ * across the whole library. Best-effort: any HTTP/parse failure resolves to `false` so a
+ * hiccup never over-pairs (the cardinal sin) and never breaks the parent comparison —
+ * except a genuine cancellation, which propagates.
+ */
+async function samePerson(expectedName: string, heardName: string, deps: CompareDeps): Promise<boolean> {
+  const key = sha(['pair', expectedName, heardName, deps.model, COMPARE_PROMPT_VERSION].join('|'));
+  if (!deps.bypassCache) {
+    const cached = await deps.cache.get<boolean>('name-pair', key);
+    if (cached !== null) return cached;
+  }
+  let same = false;
+  try {
+    const res = await fetch(`${deps.host}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: deps.model,
+        stream: false,
+        format: pairJsonSchema,
+        options: { temperature: 0 },
+        messages: [
+          { role: 'system', content: PAIR_PROMPT },
+          { role: 'user', content: JSON.stringify({ expected: expectedName, heard: heardName }) },
+        ],
+      }),
+      signal: deps.signal ?? null,
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { message?: { content?: string } };
+      const parsed = pairSchema.safeParse(JSON.parse(data.message?.content ?? '{}'));
+      if (parsed.success) same = parsed.data.same;
+    }
+  } catch (e) {
+    if (deps.signal?.aborted) throw e; // honor cancellation; swallow only real errors
+    same = false;
+  }
+  if (!deps.bypassCache) await deps.cache.set('name-pair', key, same);
+  return same;
+}
+
+/**
+ * Bug #4 recovery: the one-shot set-partition under-pairs multi-name lists. Re-judge each
+ * leftover pair (every unexpectedDetected × missingExpected) one at a time, absorb the real
+ * mishearings, and rebuild the field from the augmented matches. No-op unless BOTH sides
+ * have leftovers (a clean match or a consistent subset has nothing to recover).
+ */
+async function recoverMultiField(field: MultiFieldComparison, deps: CompareDeps): Promise<MultiFieldComparison> {
+  if (field.status === 'unknown' || field.missingExpected.length === 0 || field.unexpectedDetected.length === 0) {
+    return field;
+  }
+  const recovered: { expected: string; detected: string }[] = [];
+  const claimedExpected = new Set<string>();
+  for (const heard of field.unexpectedDetected) {
+    for (const exp of field.missingExpected) {
+      if (claimedExpected.has(normKey(exp))) continue;
+      if (await samePerson(exp, heard, deps)) {
+        recovered.push({ expected: exp, detected: heard });
+        claimedExpected.add(normKey(exp));
+        break;
+      }
+    }
+  }
+  if (recovered.length === 0) return field;
+  return buildMultiField(field.expected, field.detected, [...field.matched, ...recovered], field.reason);
+}
+
+/**
  * Compare frozen `detected` (what was heard) against `expected` (the tags). A field
  * is only judged by the LLM when BOTH sides have content; otherwise it's `unknown`
  * (we can't call a tag wrong on the strength of silence). Result is cached on
@@ -230,12 +308,19 @@ export async function compareIdentity(
   const title: SingleFieldComparison = titleComparable
     ? { status: llm.title.same ? 'match' : 'mismatch', expected: expected.title, detected: detected.title, reason: llm.title.reason }
     : unknownTitle(expected.title, detected.title);
-  const authors = authorsComparable
-    ? buildMultiField(expected.authors, detected.authors, llm.authors.matches, llm.authors.reason)
-    : unknownMultiField(expected.authors, detected.authors);
-  const narrators = narratorsComparable
-    ? buildMultiField(expected.narrators, detected.narrators, llm.narrators.matches, llm.narrators.reason)
-    : unknownMultiField(expected.narrators, detected.narrators);
+  // Build from the one-shot pairing, then recover leftovers pairwise (bug #4).
+  const authors = await recoverMultiField(
+    authorsComparable
+      ? buildMultiField(expected.authors, detected.authors, llm.authors.matches, llm.authors.reason)
+      : unknownMultiField(expected.authors, detected.authors),
+    deps,
+  );
+  const narrators = await recoverMultiField(
+    narratorsComparable
+      ? buildMultiField(expected.narrators, detected.narrators, llm.narrators.matches, llm.narrators.reason)
+      : unknownMultiField(expected.narrators, detected.narrators),
+    deps,
+  );
 
   const comparison: Comparison = {
     status: rollup([title.status, authors.status, narrators.status]),

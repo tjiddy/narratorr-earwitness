@@ -3,5 +3,15 @@ dist/
 coverage/
 .earwitness/
 .env
+.env.bak
 *.log
 .DS_Store
+
+# Local scratch / analysis artifacts (library audit, reviews, IDE) — never shipped
+scratch/
+audit-reports/
+.reviews/
+.idea/
+REVIEW.md
+FIXES.md
+HANDOFF-*.md

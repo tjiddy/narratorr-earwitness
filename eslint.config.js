@@ -16,6 +16,8 @@ export default tseslint.config(
       '**/coverage/**',
       '**/.earwitness/**',
       '**/.reviews/**',
+      '**/scratch/**',
+      '**/audit-reports/**',
     ],
   },
 
